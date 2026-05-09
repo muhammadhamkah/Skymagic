@@ -5,6 +5,9 @@ venv/
 .env
 logs/
 *.csv
+*.db
+data/
+.ura_token.json
 .DS_Store
 .idea/
 .vscode/
