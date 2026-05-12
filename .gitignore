@@ -11,3 +11,7 @@ data/
 .DS_Store
 .idea/
 .vscode/
+
+# Rust (arb_bot)
+target/
+arb_bot/config/secrets.toml
