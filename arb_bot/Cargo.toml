@@ -1,0 +1,22 @@
+[package]
+name = "arb_bot"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-source confirmation arbitrage bot (Phase 1: Binance watcher + event bus)"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

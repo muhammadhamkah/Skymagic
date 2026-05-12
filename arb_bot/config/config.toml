@@ -1,0 +1,20 @@
+[general]
+event_bus_capacity = 4096
+
+[storage]
+sqlite_path = "data/arb_bot.db"
+
+[binance]
+enabled = true
+symbols = [
+    "SOL/USDT",
+    "JTO/USDT",
+    "JUP/USDT",
+    "PYTH/USDT",
+    "AVAX/USDT",
+    "NEAR/USDT",
+    "INJ/USDT",
+    "SUI/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+]
