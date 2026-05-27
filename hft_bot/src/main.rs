@@ -419,9 +419,9 @@ fn run_tournament(flags: &HashMap<String, String>) -> Result<()> {
         allow_short: !flags.contains_key("no-short"),
         train_frac: flag_parse(flags, "train-frac", 0.7),
         target_net_usdt: flag_parse(flags, "target", 0.02),
-        stop_loss_pct: 0.0,
+        stop_loss_pct: flag_parse(flags, "stop-loss-pct", 0.0),
         take_profit_pct: 0.0,
-        trail_pct: 0.0,
+        trail_pct: flag_parse(flags, "trail-pct", 0.0),
     };
     let want: Option<Vec<String>> = flag(flags, "strategies")
         .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
@@ -478,10 +478,16 @@ fn run_tournament(flags: &HashMap<String, String>) -> Result<()> {
         entries.push(("xsec_momentum", v));
     }
 
+    let risk = match (cfg.stop_loss_pct, cfg.trail_pct) {
+        (0.0, 0.0) => "stops=off".to_string(),
+        (s, 0.0) => format!("stop={s}%"),
+        (0.0, t) => format!("trail={t}%"),
+        (s, t) => format!("stop={s}%  trail={t}%"),
+    };
     println!(
         "\nstrategy tournament on {} symbols  (conservative costs, same data + split)\n  \
-         fee={:.1}bps/side  slippage={:.1}bps  notional={} USDT  short={}  train_frac={}\n",
-        all.len(), cfg.fee_bps, cfg.slippage_bps, cfg.notional, cfg.allow_short, cfg.train_frac
+         fee={:.1}bps/side  slippage={:.1}bps  notional={} USDT  short={}  train_frac={}  {}\n",
+        all.len(), cfg.fee_bps, cfg.slippage_bps, cfg.notional, cfg.allow_short, cfg.train_frac, risk
     );
 
     struct Row<'a> {

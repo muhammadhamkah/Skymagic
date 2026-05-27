@@ -28,8 +28,13 @@ fn net(side: i8, entry_px: f64, exit_px: f64, qty: f64, fee: f64) -> f64 {
     gross - fees
 }
 
-/// A "flip" strategy: it holds long/short to match a per-bar signal sign and
-/// flips when the sign changes. Used by MA-crossover and time-series momentum.
+/// A "flip" strategy: hold long/short to match a per-bar signal sign and flip on
+/// crossover. Used by MA-crossover and time-series momentum.
+///
+/// Optional risk management (cfg.stop_loss_pct / trail_pct): a hard stop and/or
+/// trailing stop fill intrabar at the level. After a stop-out, re-entry is
+/// suppressed until the signal *flips* (a fresh crossover) — so we don't pile
+/// straight back into the same losing trend bar after bar.
 fn run_flip(
     symbol: &str,
     c: &[Candle],
@@ -43,34 +48,73 @@ fn run_flip(
     }
     let slip = cfg.slippage_bps / 10_000.0;
     let fee = cfg.fee_bps / 10_000.0;
+    let sl = cfg.stop_loss_pct / 100.0;
+    let trail = cfg.trail_pct / 100.0;
+
     let mut side: i8 = 0;
     let mut entry_px = 0.0;
     let mut qty = 0.0;
     let mut entry_time = 0i64;
+    let mut peak = 0.0; // best favorable price since entry
+    let mut stopped_dir: i8 = 0; // direction we were stopped out of (awaiting flip)
+
+    let enter = |side: &mut i8, dir: i8, exec: f64, qty: &mut f64, entry_px: &mut f64,
+                     entry_time: &mut i64, peak: &mut f64, ot: i64| {
+        *side = dir;
+        *entry_px = if dir == 1 { exec * (1.0 + slip) } else { exec * (1.0 - slip) };
+        *qty = cfg.notional / *entry_px;
+        *entry_time = ot;
+        *peak = *entry_px;
+    };
 
     for i in warmup..c.len() - 1 {
         let mut desired = signal(i);
         if !cfg.allow_short && desired < 0 {
             desired = 0;
         }
-        if desired == side {
-            continue;
-        }
+        let bar = &c[i];
         let exec = c[i + 1].open;
+
         if side != 0 {
-            let exit_px = if side == 1 { exec * (1.0 - slip) } else { exec * (1.0 + slip) };
-            out.push(Trade { symbol: symbol.to_string(), entry_time, net_pnl: net(side, entry_px, exit_px, qty, fee) });
-            side = 0;
-        }
-        if desired != 0 {
-            side = desired;
-            entry_px = if side == 1 { exec * (1.0 + slip) } else { exec * (1.0 - slip) };
-            if entry_px <= 0.0 {
+            // Intrabar stop: hard + trailing combine into the level hit first.
+            let stop = if side == 1 {
+                let mut s = (sl > 0.0).then(|| entry_px * (1.0 - sl));
+                if trail > 0.0 {
+                    let t = peak * (1.0 - trail);
+                    s = Some(s.map_or(t, |x| x.max(t)));
+                }
+                s.filter(|l| bar.low <= *l).map(|l| l * (1.0 - slip))
+            } else {
+                let mut s = (sl > 0.0).then(|| entry_px * (1.0 + sl));
+                if trail > 0.0 {
+                    let t = peak * (1.0 + trail);
+                    s = Some(s.map_or(t, |x| x.min(t)));
+                }
+                s.filter(|l| bar.high >= *l).map(|l| l * (1.0 + slip))
+            };
+            if let Some(exit_px) = stop {
+                out.push(Trade { symbol: symbol.to_string(), entry_time, net_pnl: net(side, entry_px, exit_px, qty, fee) });
+                stopped_dir = side;
                 side = 0;
-                continue;
+            } else if desired != 0 && desired != side {
+                let exit_px = if side == 1 { exec * (1.0 - slip) } else { exec * (1.0 + slip) };
+                out.push(Trade { symbol: symbol.to_string(), entry_time, net_pnl: net(side, entry_px, exit_px, qty, fee) });
+                enter(&mut side, desired, exec, &mut qty, &mut entry_px, &mut entry_time, &mut peak, c[i + 1].open_time);
+            } else if side == 1 {
+                peak = peak.max(bar.high);
+            } else {
+                peak = peak.min(bar.low);
             }
-            qty = cfg.notional / entry_px;
-            entry_time = c[i + 1].open_time;
+        } else {
+            let can_enter = if stopped_dir != 0 {
+                desired != 0 && desired != stopped_dir
+            } else {
+                desired != 0
+            };
+            if can_enter {
+                enter(&mut side, desired, exec, &mut qty, &mut entry_px, &mut entry_time, &mut peak, c[i + 1].open_time);
+                stopped_dir = 0;
+            }
         }
     }
 }
@@ -219,6 +263,26 @@ mod tests {
         let total: f64 = out.iter().map(|t| t.net_pnl).sum();
         assert!(!out.is_empty());
         assert!(total > 0.0, "momentum should profit on a trend+reversal, got {total}");
+    }
+
+    #[test]
+    fn flip_stop_caps_loss() {
+        // Always-long signal; flat then a crash. With a 5% stop we exit near the
+        // stop level (~95), not ride the crash to 80 — loss capped near −5%.
+        let mut c = Vec::new();
+        for i in 0..20 {
+            c.push(candle(i, 100.0));
+        }
+        c.push(candle(20, 80.0)); // crash bar (low = 80)
+        for i in 21..30 {
+            c.push(candle(i, 80.0));
+        }
+        let cfg = BarConfig { fee_bps: 5.0, slippage_bps: 1.0, stop_loss_pct: 5.0, ..Default::default() };
+        let mut out = Vec::new();
+        run_flip("T", &c, &cfg, 5, |_| 1, &mut out);
+        assert_eq!(out.len(), 1, "stop should close exactly one trade");
+        let net = out[0].net_pnl;
+        assert!(net > -60.0 && net < -40.0, "loss should be capped near -5% of 1000, got {net}");
     }
 
     #[test]
