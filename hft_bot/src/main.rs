@@ -54,6 +54,7 @@ fn main() -> Result<()> {
         Some("fetch-klines") => run_fetch_klines(&flags),
         Some("synth-klines") => run_synth_klines(&flags),
         Some("backtest-bars") => run_backtest_bars(&flags),
+        Some("lighter-probe") => run_lighter_probe(&flags),
         _ => {
             print_usage();
             Ok(())
@@ -82,7 +83,10 @@ fn print_usage() {
          \t                      [--notional 1000] [--train-frac 0.7] [--target 0.02] [--no-short]\n\
          \t                      [--stop-loss-pct 0] [--trail-pct 0] [--take-profit-pct 0]\n\
          \n\
-         Note: `collect`, `universe`, `fetch-klines` need direct Binance access; run them locally."
+         Lighter (perp DEX) — schema discovery:\n\
+         \thft_bot lighter-probe [--market 1] [--secs 15]   (dumps raw WS frames)\n\
+         \n\
+         Note: `collect`, `universe`, `fetch-klines`, `lighter-probe` need direct network access; run locally."
     );
 }
 
@@ -342,6 +346,17 @@ fn run_backtest(flags: &HashMap<String, String>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ---- lighter (perp DEX) -----------------------------------------------------
+
+fn run_lighter_probe(flags: &HashMap<String, String>) -> Result<()> {
+    let market: u32 = flag_parse(flags, "market", 1);
+    let secs: u64 = flag_parse(flags, "secs", 15);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(watchers::lighter::probe(market, secs))
 }
 
 // ---- higher-timeframe: universe / klines / bars backtest --------------------
