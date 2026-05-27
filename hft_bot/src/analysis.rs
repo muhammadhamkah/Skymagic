@@ -94,6 +94,8 @@ mod tests {
             symbol: symbol.into(),
             mid,
             microprice: mid,
+            bid_px: mid - 0.5,
+            ask_px: mid + 0.5,
             spread_bps: 1.0,
             book_imbalance: book_imb,
             trade_flow: 0.0,

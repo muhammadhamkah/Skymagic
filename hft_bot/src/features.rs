@@ -16,6 +16,10 @@ pub struct FeatureSnapshot {
     pub symbol: String,
     pub mid: f64,
     pub microprice: f64,
+    /// Best bid / ask at this instant. Needed to simulate taker fills (a buy
+    /// crosses to the ask, a sell crosses to the bid).
+    pub bid_px: f64,
+    pub ask_px: f64,
     pub spread_bps: f64,
     /// Top-of-book size imbalance in [-1, 1].
     pub book_imbalance: f64,
@@ -97,6 +101,8 @@ impl FeatureEngine {
         let microprice = state.book.microprice()?;
         let spread_bps = state.book.spread_bps()?;
         let book_imbalance = state.book.imbalance(self.imbalance_levels)?;
+        let (bid_px, _) = state.book.best_bid()?;
+        let (ask_px, _) = state.book.best_ask()?;
         let trade_flow_imbalance = if state.gross_sum > 0.0 {
             state.signed_sum / state.gross_sum
         } else {
@@ -108,6 +114,8 @@ impl FeatureEngine {
             symbol: ev.symbol().to_string(),
             mid,
             microprice,
+            bid_px,
+            ask_px,
             spread_bps,
             book_imbalance,
             trade_flow: state.signed_sum,
