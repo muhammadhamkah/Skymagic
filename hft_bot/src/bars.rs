@@ -209,6 +209,20 @@ pub fn summarize(trades: &[&Trade], target: f64) -> Stats {
     }
 }
 
+/// Max peak-to-trough drawdown of the cumulative net P&L, in USDT. `trades`
+/// need not be pre-sorted; we order by entry time to build the equity curve.
+pub fn max_drawdown(trades: &[&Trade]) -> f64 {
+    let mut sorted: Vec<&&Trade> = trades.iter().collect();
+    sorted.sort_by_key(|t| t.entry_time);
+    let (mut equity, mut peak, mut max_dd) = (0.0f64, 0.0f64, 0.0f64);
+    for t in sorted {
+        equity += t.net_pnl;
+        peak = peak.max(equity);
+        max_dd = max_dd.max(peak - equity);
+    }
+    max_dd
+}
+
 /// Time cutoff splitting the overall span into train (before) / test (after).
 pub fn split_cutoff(trades: &[Trade], train_frac: f64) -> i64 {
     let min = trades.iter().map(|t| t.entry_time).min().unwrap_or(0);

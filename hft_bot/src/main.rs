@@ -15,6 +15,7 @@ mod events;
 mod features;
 mod rest;
 mod storage;
+mod strategies;
 mod synth;
 mod watchers;
 
@@ -54,6 +55,7 @@ fn main() -> Result<()> {
         Some("fetch-klines") => run_fetch_klines(&flags),
         Some("synth-klines") => run_synth_klines(&flags),
         Some("backtest-bars") => run_backtest_bars(&flags),
+        Some("tournament") => run_tournament(&flags),
         Some("lighter-probe") => run_lighter_probe(&flags),
         Some("lighter-markets") => rest::lighter_markets_dump(),
         Some("lighter-universe") => run_lighter_universe(&flags),
@@ -84,6 +86,8 @@ fn print_usage() {
          \thft_bot backtest-bars --dir data/klines [--entry 20] [--exit 10] [--fee-bps 5]\n\
          \t                      [--notional 1000] [--train-frac 0.7] [--target 0.02] [--no-short]\n\
          \t                      [--stop-loss-pct 0] [--trail-pct 0] [--take-profit-pct 0]\n\
+         \thft_bot tournament --dir data/klines [--strategies ma,tsmom,xsec,meanrev,donchian]\n\
+         \t                   [--fee-bps 5] [--notional 1000] [--train-frac 0.7] [--no-short]\n\
          \n\
          Lighter (perp DEX, zero-fee):\n\
          \thft_bot lighter-probe [--market 1] [--secs 15]   (dumps raw WS frames)\n\
@@ -398,6 +402,128 @@ fn run_backtest(flags: &HashMap<String, String>) -> Result<()> {
         "(showing {shown} symbols with >= {min_trades} trades, sorted by net/trade; target {:+.5} USDT)\n\
          read: net/trade beats target on a symbol only when its OBI edge clears its spread above.",
         cfg.target_net_usdt
+    );
+    Ok(())
+}
+
+// ---- strategy tournament ----------------------------------------------------
+
+fn run_tournament(flags: &HashMap<String, String>) -> Result<()> {
+    let dir = flag(flags, "dir").unwrap_or("data/klines");
+    let cfg = BarConfig {
+        entry_lookback: flag_parse(flags, "entry", 20),
+        exit_lookback: flag_parse(flags, "exit", 10),
+        fee_bps: flag_parse(flags, "fee-bps", 5.0),
+        slippage_bps: flag_parse(flags, "slippage-bps", 1.0),
+        notional: flag_parse(flags, "notional", 1000.0),
+        allow_short: !flags.contains_key("no-short"),
+        train_frac: flag_parse(flags, "train-frac", 0.7),
+        target_net_usdt: flag_parse(flags, "target", 0.02),
+        stop_loss_pct: 0.0,
+        take_profit_pct: 0.0,
+        trail_pct: 0.0,
+    };
+    let want: Option<Vec<String>> = flag(flags, "strategies")
+        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+    let included = |name: &str| want.as_ref().map_or(true, |w| w.iter().any(|x| x == name));
+
+    let files = candles::list_symbol_files(dir)?;
+    if files.is_empty() {
+        bail!("no *.ndjson symbol files in {dir}");
+    }
+    let mut all: Vec<(String, Vec<candles::Candle>)> = Vec::new();
+    let (mut tmin, mut tmax) = (i64::MAX, i64::MIN);
+    for (sym, path) in &files {
+        let c = candles::read_candles(path)?;
+        for k in &c {
+            tmin = tmin.min(k.open_time);
+            tmax = tmax.max(k.open_time);
+        }
+        all.push((sym.clone(), c));
+    }
+    let cutoff = tmin + ((tmax - tmin) as f64 * cfg.train_frac) as i64;
+
+    let mut entries: Vec<(&str, Vec<Trade>)> = Vec::new();
+    if included("donchian") {
+        let mut v = Vec::new();
+        for (sym, c) in &all {
+            bars::run_symbol(sym, c, &cfg, &mut v);
+        }
+        entries.push(("donchian (baseline)", v));
+    }
+    if included("ma") {
+        let mut v = Vec::new();
+        for (sym, c) in &all {
+            strategies::ma_crossover(sym, c, &cfg, &mut v);
+        }
+        entries.push(("ma_crossover", v));
+    }
+    if included("tsmom") {
+        let mut v = Vec::new();
+        for (sym, c) in &all {
+            strategies::ts_momentum(sym, c, &cfg, &mut v);
+        }
+        entries.push(("ts_momentum", v));
+    }
+    if included("meanrev") {
+        let mut v = Vec::new();
+        for (sym, c) in &all {
+            strategies::mean_reversion(sym, c, &cfg, &mut v);
+        }
+        entries.push(("mean_reversion", v));
+    }
+    if included("xsec") {
+        let mut v = Vec::new();
+        strategies::cross_sectional(&all, &cfg, &mut v);
+        entries.push(("xsec_momentum", v));
+    }
+
+    println!(
+        "\nstrategy tournament on {} symbols  (conservative costs, same data + split)\n  \
+         fee={:.1}bps/side  slippage={:.1}bps  notional={} USDT  short={}  train_frac={}\n",
+        all.len(), cfg.fee_bps, cfg.slippage_bps, cfg.notional, cfg.allow_short, cfg.train_frac
+    );
+
+    struct Row<'a> {
+        name: &'a str,
+        is_total: f64,
+        os: bars::Stats,
+        dd: f64,
+        pos: usize,
+        breadth: usize,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for (name, trades) in &entries {
+        let train: Vec<&Trade> = trades.iter().filter(|t| t.entry_time < cutoff).collect();
+        let test: Vec<&Trade> = trades.iter().filter(|t| t.entry_time >= cutoff).collect();
+        let is = bars::summarize(&train, cfg.target_net_usdt);
+        let os = bars::summarize(&test, cfg.target_net_usdt);
+        let dd = bars::max_drawdown(&test);
+        let mut by: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+        for t in &test {
+            *by.entry(t.symbol.as_str()).or_insert(0.0) += t.net_pnl;
+        }
+        let pos = by.values().filter(|v| **v > 0.0).count();
+        rows.push(Row { name, is_total: is.total_net, os, dd, pos, breadth: by.len() });
+    }
+    rows.sort_by(|a, b| b.os.total_net.partial_cmp(&a.os.total_net).unwrap());
+
+    println!(
+        "{:<20} {:>8} {:>13} {:>13} {:>7} {:>12} {:>10} {:>13}",
+        "strategy", "OOStrds", "OOS net/tr", "OOS total", "win%", "OOS maxDD", "breadth", "IS total"
+    );
+    println!("(ranked by out-of-sample total net)\n{}", "-".repeat(100));
+    for r in &rows {
+        println!(
+            "{:<20} {:>8} {:>+13.5} {:>+13.2} {:>6.1}% {:>12.2} {:>4}/{:<5} {:>+13.2}",
+            r.name, r.os.n, r.os.net_per_trade, r.os.total_net, r.os.win_rate * 100.0,
+            r.dd, r.pos, r.breadth, r.is_total
+        );
+    }
+    println!(
+        "\nread: trust a winner only if its OOS total is positive, its IS total agrees (not\n\
+         in-sample-only), and breadth is broad. Best-of-N still needs forward validation —\n\
+         survivorship bias (today's symbols on past data) flatters all of these."
     );
     Ok(())
 }
