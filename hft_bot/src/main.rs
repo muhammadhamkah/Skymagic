@@ -80,6 +80,7 @@ fn print_usage() {
          \thft_bot synth-klines [--out-dir data/klines] [--symbols 12] [--bars 4000] [--trendiness 0.5]\n\
          \thft_bot backtest-bars --dir data/klines [--entry 20] [--exit 10] [--fee-bps 5]\n\
          \t                      [--notional 1000] [--train-frac 0.7] [--target 0.02] [--no-short]\n\
+         \t                      [--stop-loss-pct 0] [--trail-pct 0] [--take-profit-pct 0]\n\
          \n\
          Note: `collect`, `universe`, `fetch-klines` need direct Binance access; run them locally."
     );
@@ -438,6 +439,9 @@ fn run_backtest_bars(flags: &HashMap<String, String>) -> Result<()> {
         allow_short: !flags.contains_key("no-short"),
         train_frac: flag_parse(flags, "train-frac", 0.7),
         target_net_usdt: flag_parse(flags, "target", 0.02),
+        stop_loss_pct: flag_parse(flags, "stop-loss-pct", 0.0),
+        take_profit_pct: flag_parse(flags, "take-profit-pct", 0.0),
+        trail_pct: flag_parse(flags, "trail-pct", 0.0),
     };
 
     let files = candles::list_symbol_files(dir)?;
@@ -456,11 +460,26 @@ fn run_backtest_bars(flags: &HashMap<String, String>) -> Result<()> {
         }
     }
 
+    let mut riskbits: Vec<String> = Vec::new();
+    if cfg.stop_loss_pct > 0.0 {
+        riskbits.push(format!("stop={}%", cfg.stop_loss_pct));
+    }
+    if cfg.trail_pct > 0.0 {
+        riskbits.push(format!("trail={}%", cfg.trail_pct));
+    }
+    if cfg.take_profit_pct > 0.0 {
+        riskbits.push(format!("tp={}%", cfg.take_profit_pct));
+    }
+    let risk = if riskbits.is_empty() {
+        "stops=off".to_string()
+    } else {
+        riskbits.join("  ")
+    };
     println!(
         "\nDonchian {}/{} breakout on {} symbols ({} traded)\n  \
-         fee={:.1}bps/side  slippage={:.1}bps  notional={} USDT  short={}  train_frac={}\n",
+         fee={:.1}bps/side  slippage={:.1}bps  notional={} USDT  short={}  train_frac={}\n  {}\n",
         cfg.entry_lookback, cfg.exit_lookback, files.len(), symbols_traded,
-        cfg.fee_bps, cfg.slippage_bps, cfg.notional, cfg.allow_short, cfg.train_frac
+        cfg.fee_bps, cfg.slippage_bps, cfg.notional, cfg.allow_short, cfg.train_frac, risk
     );
 
     if trades.is_empty() {
@@ -500,16 +519,41 @@ fn run_backtest_bars(flags: &HashMap<String, String>) -> Result<()> {
         by_sym.len()
     );
 
+    // Monthly P&L + cumulative (equity curve) to expose regime dependence.
+    use std::collections::BTreeMap;
+    let mut sorted: Vec<&Trade> = trades.iter().collect();
+    sorted.sort_by_key(|t| t.entry_time);
+    let mut by_month: BTreeMap<String, (usize, f64, i64)> = BTreeMap::new();
+    for t in &sorted {
+        let key = chrono::DateTime::from_timestamp_millis(t.entry_time)
+            .map(|d| d.format("%Y-%m").to_string())
+            .unwrap_or_else(|| "????-??".into());
+        let e = by_month.entry(key).or_insert((0, 0.0, t.entry_time));
+        e.0 += 1;
+        e.1 += t.net_pnl;
+        e.2 = e.2.min(t.entry_time);
+    }
+    println!("\nmonthly P&L (cumulative column is the equity curve):");
+    println!("{:<9} {:>8} {:>14} {:>16}", "month", "trades", "net", "cumulative");
+    let mut cum = 0.0;
+    for (mon, (cnt, net, min_ts)) in &by_month {
+        cum += net;
+        let tag = if *min_ts >= cutoff { "  <- out-of-sample" } else { "" };
+        println!("{:<9} {:>8} {:>+14.2} {:>+16.2}{}", mon, cnt, net, cum, tag);
+    }
+
     let verdict = if os.n < 30 {
         "INCONCLUSIVE — too few out-of-sample trades"
+    } else if os.net_per_trade <= 0.0 {
+        "NO EDGE out-of-sample"
+    } else if ts.net_per_trade <= 0.0 {
+        "REGIME-DEPENDENT — profitable out-of-sample but LOST in-sample; not a stable edge"
     } else if os.net_per_trade >= cfg.target_net_usdt {
-        "edge holds out-of-sample AND clears target"
-    } else if os.net_per_trade > 0.0 {
-        "positive out-of-sample but below target"
+        "edge positive in BOTH periods AND clears target"
     } else {
-        "no edge out-of-sample (likely in-sample overfit)"
+        "edge positive in both periods but below target"
     };
-    println!("verdict: {verdict}");
+    println!("\nverdict: {verdict}");
     println!(
         "\nnote: this uses TODAY's liquid symbols on PAST data (survivorship bias) — \n\
          real-world results will be somewhat worse than shown."
