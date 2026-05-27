@@ -87,7 +87,7 @@ fn print_usage() {
          \t                      [--notional 1000] [--train-frac 0.7] [--target 0.02] [--no-short]\n\
          \t                      [--stop-loss-pct 0] [--trail-pct 0] [--take-profit-pct 0]\n\
          \thft_bot tournament --dir data/klines [--strategies ma,tsmom,xsec,meanrev,donchian]\n\
-         \t                   [--fee-bps 5] [--notional 1000] [--train-frac 0.7] [--no-short]\n\
+         \t                   [--fee-bps 5] [--notional 1000] [--train-frac 0.7] [--walk 8] [--no-short]\n\
          \n\
          Lighter (perp DEX, zero-fee):\n\
          \thft_bot lighter-probe [--market 1] [--secs 15]   (dumps raw WS frames)\n\
@@ -520,10 +520,41 @@ fn run_tournament(flags: &HashMap<String, String>) -> Result<()> {
             r.dd, r.pos, r.breadth, r.is_total
         );
     }
+    // Walk-forward: split the whole timeline into equal segments and show each
+    // strategy's net per segment. A real edge is positive across most segments;
+    // a one-split fluke shows up as profit in only one or two.
+    let walk: usize = flag_parse(flags, "walk", 8);
+    if walk >= 2 && tmax > tmin {
+        let width = ((tmax - tmin) as f64 / walk as f64).max(1.0);
+        println!(
+            "\nwalk-forward: net per segment ({walk} equal periods, ~{} days each) — consistency check",
+            (width / 86_400_000.0) as i64
+        );
+        print!("{:<20}", "strategy");
+        for s in 1..=walk {
+            print!(" {:>8}", format!("s{s}"));
+        }
+        println!(" {:>7}", "#pos");
+        println!("{}", "-".repeat(20 + walk * 9 + 8));
+        for (name, trades) in &entries {
+            let mut seg = vec![0.0f64; walk];
+            for t in trades {
+                let idx = (((t.entry_time - tmin) as f64 / width) as usize).min(walk - 1);
+                seg[idx] += t.net_pnl;
+            }
+            let pos = seg.iter().filter(|v| **v > 0.0).count();
+            print!("{:<20}", name);
+            for v in &seg {
+                print!(" {:>+8.0}", v);
+            }
+            println!(" {:>5}/{}", pos, walk);
+        }
+    }
+
     println!(
         "\nread: trust a winner only if its OOS total is positive, its IS total agrees (not\n\
-         in-sample-only), and breadth is broad. Best-of-N still needs forward validation —\n\
-         survivorship bias (today's symbols on past data) flatters all of these."
+         in-sample-only), breadth is broad, AND it's positive across most walk-forward\n\
+         segments. Survivorship bias (today's symbols on past data) flatters all of these."
     );
     Ok(())
 }
