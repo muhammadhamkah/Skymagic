@@ -11,6 +11,25 @@ use serde::Deserialize;
 use crate::candles::Candle;
 
 const FAPI: &str = "https://fapi.binance.com";
+const LIGHTER: &str = "https://mainnet.zklighter.elliot.ai";
+
+/// Dump Lighter's market-list REST responses raw, so we can learn the schema
+/// (market id, symbol, volume) to build the universe picker.
+pub fn lighter_markets_dump() -> Result<()> {
+    for path in ["/api/v1/orderBookDetails", "/api/v1/orderBooks"] {
+        let url = format!("{LIGHTER}{path}");
+        match reqwest::blocking::get(&url) {
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().unwrap_or_default();
+                let preview: String = body.chars().take(4000).collect();
+                println!("== {url}  ({status}) ==\n{preview}\n");
+            }
+            Err(e) => println!("== {url}  ERROR: {e}\n"),
+        }
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct Ticker24h {

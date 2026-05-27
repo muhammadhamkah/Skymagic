@@ -55,6 +55,7 @@ fn main() -> Result<()> {
         Some("synth-klines") => run_synth_klines(&flags),
         Some("backtest-bars") => run_backtest_bars(&flags),
         Some("lighter-probe") => run_lighter_probe(&flags),
+        Some("lighter-markets") => rest::lighter_markets_dump(),
         _ => {
             print_usage();
             Ok(())
@@ -83,8 +84,10 @@ fn print_usage() {
          \t                      [--notional 1000] [--train-frac 0.7] [--target 0.02] [--no-short]\n\
          \t                      [--stop-loss-pct 0] [--trail-pct 0] [--take-profit-pct 0]\n\
          \n\
-         Lighter (perp DEX) — schema discovery:\n\
+         Lighter (perp DEX, zero-fee):\n\
          \thft_bot lighter-probe [--market 1] [--secs 15]   (dumps raw WS frames)\n\
+         \thft_bot lighter-markets                          (dumps REST market list/volume)\n\
+         \thft_bot collect --venue lighter --markets 0,1,2 [--out data/lighter.ndjson]\n\
          \n\
          Note: `collect`, `universe`, `fetch-klines`, `lighter-probe` need direct network access; run locally."
     );
@@ -126,6 +129,13 @@ fn run_collect(flags: &HashMap<String, String>) -> Result<()> {
         .collect();
     let out = flag(flags, "out").unwrap_or("data/events.ndjson").to_string();
     let print_every: u64 = flag_parse(flags, "print-every", 200);
+    let venue = flag(flags, "venue").unwrap_or("binance").to_string();
+    // For Lighter, --markets is a comma list of integer market ids (e.g. 0,1,2).
+    let markets: Vec<u32> = flag(flags, "markets")
+        .unwrap_or("1")
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -133,9 +143,14 @@ fn run_collect(flags: &HashMap<String, String>) -> Result<()> {
 
     rt.block_on(async move {
         let recorder = Recorder::create(&out)?;
-        let (tx, mut rx) = mpsc::channel::<MarketEvent>(100_000);
+        let (tx, mut rx) = mpsc::channel::<MarketEvent>(200_000);
 
-        let watcher = tokio::spawn(watchers::binance::run(symbols.clone(), tx));
+        let watcher = if venue == "lighter" {
+            info!(?markets, "collecting from lighter");
+            tokio::spawn(watchers::lighter::run(markets, tx))
+        } else {
+            tokio::spawn(watchers::binance::run(symbols.clone(), tx))
+        };
 
         let mut engine = FeatureEngine::new(1000, 1);
         let mut n: u64 = 0;
