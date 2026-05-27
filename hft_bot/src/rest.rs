@@ -13,6 +13,34 @@ use crate::candles::Candle;
 const FAPI: &str = "https://fapi.binance.com";
 const LIGHTER: &str = "https://mainnet.zklighter.elliot.ai";
 
+#[derive(Deserialize)]
+struct LighterMarket {
+    market_id: u32,
+    symbol: String,
+}
+#[derive(Deserialize)]
+struct LighterOrderBooks {
+    order_books: Vec<LighterMarket>,
+}
+
+/// All Lighter perp markets as (market_id, symbol).
+pub fn lighter_all_markets() -> Result<Vec<(u32, String)>> {
+    let url = format!("{LIGHTER}/api/v1/orderBooks");
+    let resp: LighterOrderBooks = reqwest::blocking::get(&url)
+        .context("fetching lighter markets")?
+        .error_for_status()
+        .context("lighter markets http status")?
+        .json()
+        .context("parsing lighter markets")?;
+    let mut out: Vec<(u32, String)> = resp
+        .order_books
+        .into_iter()
+        .map(|m| (m.market_id, m.symbol))
+        .collect();
+    out.sort_by_key(|(id, _)| *id);
+    Ok(out)
+}
+
 /// Dump Lighter's market-list REST responses raw, so we can learn the schema
 /// (market id, symbol, volume) to build the universe picker.
 pub fn lighter_markets_dump() -> Result<()> {

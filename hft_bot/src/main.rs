@@ -56,6 +56,7 @@ fn main() -> Result<()> {
         Some("backtest-bars") => run_backtest_bars(&flags),
         Some("lighter-probe") => run_lighter_probe(&flags),
         Some("lighter-markets") => rest::lighter_markets_dump(),
+        Some("lighter-universe") => run_lighter_universe(&flags),
         _ => {
             print_usage();
             Ok(())
@@ -86,8 +87,10 @@ fn print_usage() {
          \n\
          Lighter (perp DEX, zero-fee):\n\
          \thft_bot lighter-probe [--market 1] [--secs 15]   (dumps raw WS frames)\n\
-         \thft_bot lighter-markets                          (dumps REST market list/volume)\n\
-         \thft_bot collect --venue lighter --markets 0,1,2 [--out data/lighter.ndjson]\n\
+         \thft_bot lighter-markets                          (dumps REST market list)\n\
+         \thft_bot lighter-universe [--out data/lighter_markets.txt]   (all markets -> file)\n\
+         \thft_bot collect --venue lighter --markets-file data/lighter_markets.txt [--out data/lighter.ndjson]\n\
+         \thft_bot collect --venue lighter --markets all   (subscribe to every market)\n\
          \n\
          Note: `collect`, `universe`, `fetch-klines`, `lighter-probe` need direct network access; run locally."
     );
@@ -130,12 +133,32 @@ fn run_collect(flags: &HashMap<String, String>) -> Result<()> {
     let out = flag(flags, "out").unwrap_or("data/events.ndjson").to_string();
     let print_every: u64 = flag_parse(flags, "print-every", 200);
     let venue = flag(flags, "venue").unwrap_or("binance").to_string();
-    // For Lighter, --markets is a comma list of integer market ids (e.g. 0,1,2).
-    let markets: Vec<u32> = flag(flags, "markets")
-        .unwrap_or("1")
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
+    // For Lighter: (market_id, symbol). Source order: --markets-file, then
+    // `--markets all` (fetch every market), then an explicit id list.
+    let lighter_markets: Vec<(u32, String)> = if venue == "lighter" {
+        if let Some(path) = flag(flags, "markets-file") {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("reading {path}"))?
+                .lines()
+                .filter_map(|l| {
+                    let mut it = l.split_whitespace();
+                    let id: u32 = it.next()?.parse().ok()?;
+                    let sym = it.next().map(str::to_string).unwrap_or_else(|| id.to_string());
+                    Some((id, sym))
+                })
+                .collect()
+        } else if flag(flags, "markets") == Some("all") {
+            rest::lighter_all_markets()?
+        } else {
+            flag(flags, "markets")
+                .unwrap_or("1")
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u32>().ok().map(|id| (id, id.to_string())))
+                .collect()
+        }
+    } else {
+        Vec::new()
+    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -146,8 +169,8 @@ fn run_collect(flags: &HashMap<String, String>) -> Result<()> {
         let (tx, mut rx) = mpsc::channel::<MarketEvent>(200_000);
 
         let watcher = if venue == "lighter" {
-            info!(?markets, "collecting from lighter");
-            tokio::spawn(watchers::lighter::run(markets, tx))
+            info!(markets = lighter_markets.len(), "collecting from lighter");
+            tokio::spawn(watchers::lighter::run(lighter_markets, tx))
         } else {
             tokio::spawn(watchers::binance::run(symbols.clone(), tx))
         };
@@ -364,6 +387,30 @@ fn run_backtest(flags: &HashMap<String, String>) -> Result<()> {
 }
 
 // ---- lighter (perp DEX) -----------------------------------------------------
+
+fn run_lighter_universe(flags: &HashMap<String, String>) -> Result<()> {
+    let out = flag(flags, "out").unwrap_or("data/lighter_markets.txt");
+    let markets = rest::lighter_all_markets()?;
+    if let Some(parent) = std::path::Path::new(out).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let body: String = markets
+        .iter()
+        .map(|(id, s)| format!("{id} {s}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(out, body)?;
+    println!("wrote {} lighter markets to {out}", markets.len());
+    for (id, s) in markets.iter().take(25) {
+        println!("  {id:>4}  {s}");
+    }
+    if markets.len() > 25 {
+        println!("  ... +{} more", markets.len() - 25);
+    }
+    Ok(())
+}
 
 fn run_lighter_probe(flags: &HashMap<String, String>) -> Result<()> {
     let market: u32 = flag_parse(flags, "market", 1);

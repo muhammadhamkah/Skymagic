@@ -79,11 +79,14 @@ impl Book {
 }
 
 /// Run forever: connect, subscribe to each market's book + trades, maintain the
-/// books, and forward normalized events. Reconnects with backoff.
-pub async fn run(markets: Vec<u32>, tx: Sender<MarketEvent>) -> Result<()> {
+/// books, and forward normalized events labeled with the market's symbol.
+/// `markets` is (market_id, symbol). Reconnects with backoff.
+pub async fn run(markets: Vec<(u32, String)>, tx: Sender<MarketEvent>) -> Result<()> {
+    let names: HashMap<u32, String> = markets.iter().cloned().collect();
+    let ids: Vec<u32> = markets.iter().map(|(id, _)| *id).collect();
     let mut backoff = Duration::from_secs(1);
     loop {
-        match stream_once(&markets, &tx).await {
+        match stream_once(&ids, &names, &tx).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 warn!(error = %e, backoff_secs = backoff.as_secs(), "lighter disconnected, retrying");
@@ -94,10 +97,14 @@ pub async fn run(markets: Vec<u32>, tx: Sender<MarketEvent>) -> Result<()> {
     }
 }
 
-async fn stream_once(markets: &[u32], tx: &Sender<MarketEvent>) -> Result<()> {
+async fn stream_once(
+    ids: &[u32],
+    names: &HashMap<u32, String>,
+    tx: &Sender<MarketEvent>,
+) -> Result<()> {
     let (mut ws, _resp) = connect_async(WS).await.context("lighter ws connect")?;
-    info!(markets = markets.len(), "connected to lighter; subscribing");
-    for m in markets {
+    info!(markets = ids.len(), "connected to lighter; subscribing");
+    for m in ids {
         for ch in [format!("order_book/{m}"), format!("trade/{m}")] {
             let msg = serde_json::json!({"type": "subscribe", "channel": ch}).to_string();
             ws.send(Message::Text(msg)).await.context("subscribe")?;
@@ -108,7 +115,7 @@ async fn stream_once(markets: &[u32], tx: &Sender<MarketEvent>) -> Result<()> {
     while let Some(msg) = ws.next().await {
         match msg.context("ws read")? {
             Message::Text(t) => {
-                if !handle(&t, &mut books, tx).await {
+                if !handle(&t, &mut books, names, tx).await {
                     return Ok(()); // consumer gone
                 }
             }
@@ -125,10 +132,16 @@ async fn stream_once(markets: &[u32], tx: &Sender<MarketEvent>) -> Result<()> {
 }
 
 /// Returns false if the downstream channel is closed.
-async fn handle(txt: &str, books: &mut HashMap<u32, Book>, tx: &Sender<MarketEvent>) -> bool {
+async fn handle(
+    txt: &str,
+    books: &mut HashMap<u32, Book>,
+    names: &HashMap<u32, String>,
+    tx: &Sender<MarketEvent>,
+) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(txt) else { return true };
     let channel = v.get("channel").and_then(|c| c.as_str()).unwrap_or("");
     let recv = now_millis();
+    let label = |mid: u32| names.get(&mid).cloned().unwrap_or_else(|| mid.to_string());
 
     if let Some(suffix) = channel.strip_prefix("order_book:") {
         let mid: u32 = match suffix.parse() {
@@ -145,7 +158,7 @@ async fn handle(txt: &str, books: &mut HashMap<u32, Book>, tx: &Sender<MarketEve
                 let ev = MarketEvent::BookTicker(BookTicker {
                     ts,
                     recv_ts: recv,
-                    symbol: mid.to_string(),
+                    symbol: label(mid),
                     bid_px: bp,
                     bid_qty: bq,
                     ask_px: ap,
@@ -162,13 +175,13 @@ async fn handle(txt: &str, books: &mut HashMap<u32, Book>, tx: &Sender<MarketEve
                 let px = tr.get("price").and_then(|x| x.as_str()).and_then(|s| s.parse::<f64>().ok());
                 let qty = tr.get("size").and_then(|x| x.as_str()).and_then(|s| s.parse::<f64>().ok());
                 let (Some(px), Some(qty)) = (px, qty) else { continue };
-                let mid = tr.get("market_id").and_then(|x| x.as_u64()).unwrap_or(0);
+                let mid = tr.get("market_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                 let maker_ask = tr.get("is_maker_ask").and_then(|x| x.as_bool()).unwrap_or(false);
                 let ts = tr.get("timestamp").and_then(parse_ts).unwrap_or(recv);
                 let ev = MarketEvent::Trade(Trade {
                     ts,
                     recv_ts: recv,
-                    symbol: mid.to_string(),
+                    symbol: label(mid),
                     px,
                     qty,
                     is_buyer_maker: !maker_ask,
