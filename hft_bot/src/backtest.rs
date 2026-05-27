@@ -65,6 +65,7 @@ pub struct CompletedTrade {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // full report; the CLI summary surfaces a subset, tests check the rest
 pub struct BacktestReport {
     pub symbol: String,
     pub n_trades: usize,

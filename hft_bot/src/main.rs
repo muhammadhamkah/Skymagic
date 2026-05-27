@@ -354,35 +354,51 @@ fn run_backtest(flags: &HashMap<String, String>) -> Result<()> {
         cfg.latency_ms, cfg.slippage_ticks, cfg.tick_size
     );
 
-    let mut symbols: Vec<&String> = by_symbol.keys().collect();
-    symbols.sort();
-    for sym in symbols {
-        let snaps = &by_symbol[sym];
-        match backtest::run(snaps, &cfg) {
-            Some(r) if r.n_trades > 0 => {
-                println!("=== {} ===", r.symbol);
-                println!("  trades            : {}", r.n_trades);
-                println!("  win rate          : {:.1}%  ({}/{})", r.win_rate * 100.0, r.wins, r.n_trades);
-                println!("  gross P&L         : {:+.4} USDT", r.gross_pnl);
-                println!("  fees paid         : {:.4} USDT", r.total_fees);
-                println!("  net P&L           : {:+.4} USDT", r.net_pnl);
-                println!("  net / trade       : {:+.5} USDT   (target {:+.5})", r.net_per_trade, cfg.target_net_usdt);
-                println!("  median net / trade: {:+.5} USDT", r.median_net);
-                println!("  hit target rate   : {:.1}%", r.hit_target_rate * 100.0);
-                println!("  avg hold          : {:.0} ms", r.avg_hold_ms);
-                println!("  round-trip fee    : {:.4} USDT/trade (spread is on top)", r.round_trip_fee_usdt);
-                let verdict = if r.net_per_trade >= cfg.target_net_usdt {
-                    "GOAL MET on this data"
-                } else if r.net_per_trade > 0.0 {
-                    "profitable but below target"
-                } else {
-                    "unprofitable after costs"
-                };
-                println!("  verdict           : {verdict}\n");
+    let min_trades: usize = flag_parse(flags, "min-trades", 10);
+    let mut rows: Vec<(String, backtest::BacktestReport, f64)> = Vec::new();
+    for (sym, snaps) in &by_symbol {
+        if let Some(r) = backtest::run(snaps, &cfg) {
+            if r.n_trades == 0 {
+                continue;
             }
-            _ => println!("=== {sym} ===\n  no trades triggered (threshold too high or too few snapshots)\n"),
+            let mean_spread = snaps.iter().map(|s| s.spread_bps).sum::<f64>() / snaps.len() as f64;
+            rows.push((sym.clone(), r, mean_spread));
         }
     }
+    rows.sort_by(|a, b| b.1.net_per_trade.partial_cmp(&a.1.net_per_trade).unwrap());
+
+    println!(
+        "{:<14} {:>8} {:>8} {:>14} {:>12} {:>13}",
+        "symbol", "trades", "win%", "net/trade", "spread_bps", "total net"
+    );
+    println!("{}", "-".repeat(74));
+    let (mut agg_trades, mut agg_net, mut pos, mut shown) = (0usize, 0.0, 0usize, 0usize);
+    for (sym, r, spr) in &rows {
+        agg_trades += r.n_trades;
+        agg_net += r.net_pnl;
+        if r.net_pnl > 0.0 {
+            pos += 1;
+        }
+        if r.n_trades < min_trades {
+            continue;
+        }
+        shown += 1;
+        println!(
+            "{:<14} {:>8} {:>7.1}% {:>+14.5} {:>12.2} {:>+13.2}",
+            sym, r.n_trades, r.win_rate * 100.0, r.net_per_trade, spr, r.net_pnl
+        );
+    }
+    println!("{}", "-".repeat(74));
+    let agg_per_trade = if agg_trades > 0 { agg_net / agg_trades as f64 } else { 0.0 };
+    println!(
+        "TOTAL: {} symbols traded, {} net-positive  |  {} trades  |  net {:+.2} USDT  |  net/trade {:+.5}",
+        rows.len(), pos, agg_trades, agg_net, agg_per_trade
+    );
+    println!(
+        "(showing {shown} symbols with >= {min_trades} trades, sorted by net/trade; target {:+.5} USDT)\n\
+         read: net/trade beats target on a symbol only when its OBI edge clears its spread above.",
+        cfg.target_net_usdt
+    );
     Ok(())
 }
 
