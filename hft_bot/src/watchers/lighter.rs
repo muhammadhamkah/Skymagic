@@ -86,9 +86,15 @@ pub async fn run(markets: Vec<(u32, String)>, tx: Sender<MarketEvent>) -> Result
     let ids: Vec<u32> = markets.iter().map(|(id, _)| *id).collect();
     let mut backoff = Duration::from_secs(1);
     loop {
+        let started = tokio::time::Instant::now();
         match stream_once(&ids, &names, &tx).await {
             Ok(()) => return Ok(()),
             Err(e) => {
+                // A connection that stayed up a while then dropped is a transient
+                // blip, not an escalating failure — reset the backoff.
+                if started.elapsed() > Duration::from_secs(60) {
+                    backoff = Duration::from_secs(1);
+                }
                 warn!(error = %e, backoff_secs = backoff.as_secs(), "lighter disconnected, retrying");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -112,23 +118,33 @@ async fn stream_once(
     }
 
     let mut books: HashMap<u32, Book> = HashMap::new();
-    while let Some(msg) = ws.next().await {
-        match msg.context("ws read")? {
-            Message::Text(t) => {
-                if !handle(&t, &mut books, names, tx).await {
-                    return Ok(()); // consumer gone
+    // Lighter closes the connection if the client sends no frame within 2 min,
+    // so send a ping well inside that window.
+    let mut keepalive = tokio::time::interval(Duration::from_secs(30));
+    keepalive.tick().await; // consume the immediate first tick
+    loop {
+        tokio::select! {
+            _ = keepalive.tick() => {
+                ws.send(Message::Ping(Vec::new())).await.context("keepalive ping")?;
+            }
+            msg = ws.next() => {
+                match msg {
+                    Some(Ok(Message::Text(t))) => {
+                        if !handle(&t, &mut books, names, tx).await {
+                            return Ok(()); // consumer gone
+                        }
+                    }
+                    Some(Ok(Message::Ping(p))) => {
+                        ws.send(Message::Pong(p)).await.context("pong")?;
+                    }
+                    Some(Ok(Message::Close(frame))) => anyhow::bail!("server close: {frame:?}"),
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(anyhow::Error::new(e).context("ws read")),
+                    None => anyhow::bail!("stream ended"),
                 }
             }
-            Message::Ping(p) => {
-                ws.send(Message::Pong(p)).await.context("pong")?;
-            }
-            Message::Close(frame) => {
-                anyhow::bail!("server close: {frame:?}");
-            }
-            _ => {}
         }
     }
-    anyhow::bail!("stream ended");
 }
 
 /// Returns false if the downstream channel is closed.
