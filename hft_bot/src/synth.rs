@@ -9,7 +9,53 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
+use crate::candles::Candle;
 use crate::events::{BookTicker, MarketEvent, Trade, Ts};
+
+/// Generate regime-switching OHLCV: the price drifts in trending bursts
+/// separated by chop, so a breakout strategy has real trends to catch and real
+/// whipsaws to lose on. `trendiness` in [0,1] sets how often a trending regime
+/// kicks in versus flat noise.
+pub fn gen_candles(
+    n: usize,
+    start_ts: i64,
+    step_ms: i64,
+    start_px: f64,
+    seed: u64,
+    trendiness: f64,
+) -> Vec<Candle> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut px = start_px;
+    let mut drift = 0.0;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        if i % 50 == 0 {
+            let r: f64 = rng.gen();
+            drift = if r < trendiness / 2.0 {
+                0.004
+            } else if r < trendiness {
+                -0.004
+            } else {
+                0.0
+            };
+        }
+        let open = px;
+        let noise: f64 = rng.gen_range(-1.0..1.0) * 0.004;
+        let close = (px * (1.0 + drift + noise)).max(0.01);
+        let high = open.max(close) * (1.0 + rng.gen_range(0.0..0.002));
+        let low = open.min(close) * (1.0 - rng.gen_range(0.0..0.002));
+        out.push(Candle {
+            open_time: start_ts + i as i64 * step_ms,
+            open,
+            high,
+            low,
+            close,
+            volume: rng.gen_range(1.0..100.0),
+        });
+        px = close;
+    }
+    out
+}
 
 pub struct SynthConfig {
     pub symbol: String,

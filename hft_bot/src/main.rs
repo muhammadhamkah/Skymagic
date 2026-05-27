@@ -8,9 +8,12 @@
 
 mod analysis;
 mod backtest;
+mod bars;
 mod book;
+mod candles;
 mod events;
 mod features;
+mod rest;
 mod storage;
 mod synth;
 mod watchers;
@@ -24,6 +27,7 @@ use tracing::info;
 
 use crate::analysis::edge_report;
 use crate::backtest::BacktestConfig;
+use crate::bars::{BarConfig, Trade};
 use crate::events::MarketEvent;
 use crate::features::{FeatureEngine, FeatureSnapshot};
 use crate::storage::{EventReader, Recorder};
@@ -46,6 +50,10 @@ fn main() -> Result<()> {
         Some("synth") => run_synth(&flags),
         Some("replay") => run_replay(&flags),
         Some("backtest") => run_backtest(&flags),
+        Some("universe") => run_universe(&flags),
+        Some("fetch-klines") => run_fetch_klines(&flags),
+        Some("synth-klines") => run_synth_klines(&flags),
+        Some("backtest-bars") => run_backtest_bars(&flags),
         _ => {
             print_usage();
             Ok(())
@@ -65,7 +73,15 @@ fn print_usage() {
          \t                 [--fee-bps 5] [--target 0.02] [--latency-ms 100] [--slippage-ticks 1]\n\
          \t                 [--tick 0.1] [--window-ms 1000] [--no-short]\n\
          \n\
-         Note: `collect` needs direct Binance access; run it locally, not from a geo-blocked cloud."
+         Higher-timeframe (Donchian) workflow:\n\
+         \thft_bot universe [--n 150] [--out data/universe.txt]\n\
+         \thft_bot fetch-klines [--symbols-file data/universe.txt | --top 150] [--interval 1h]\n\
+         \t                     [--months 24] [--out-dir data/klines]\n\
+         \thft_bot synth-klines [--out-dir data/klines] [--symbols 12] [--bars 4000] [--trendiness 0.5]\n\
+         \thft_bot backtest-bars --dir data/klines [--entry 20] [--exit 10] [--fee-bps 5]\n\
+         \t                      [--notional 1000] [--train-frac 0.7] [--target 0.02] [--no-short]\n\
+         \n\
+         Note: `collect`, `universe`, `fetch-klines` need direct Binance access; run them locally."
     );
 }
 
@@ -324,5 +340,179 @@ fn run_backtest(flags: &HashMap<String, String>) -> Result<()> {
             _ => println!("=== {sym} ===\n  no trades triggered (threshold too high or too few snapshots)\n"),
         }
     }
+    Ok(())
+}
+
+// ---- higher-timeframe: universe / klines / bars backtest --------------------
+
+fn run_universe(flags: &HashMap<String, String>) -> Result<()> {
+    let n: usize = flag_parse(flags, "n", 150);
+    let out = flag(flags, "out").unwrap_or("data/universe.txt");
+    println!("fetching top {n} USDⓈ-M perps by 24h volume...");
+    let symbols = rest::top_symbols_by_volume(n)?;
+    if let Some(parent) = std::path::Path::new(out).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(out, symbols.join("\n"))?;
+    println!("wrote {} symbols to {out}", symbols.len());
+    for (i, s) in symbols.iter().take(20).enumerate() {
+        println!("  {:>3}. {s}", i + 1);
+    }
+    if symbols.len() > 20 {
+        println!("  ... +{} more", symbols.len() - 20);
+    }
+    Ok(())
+}
+
+fn run_fetch_klines(flags: &HashMap<String, String>) -> Result<()> {
+    let interval = flag(flags, "interval").unwrap_or("1h").to_string();
+    let months: i64 = flag_parse(flags, "months", 24);
+    let out_dir = flag(flags, "out-dir").unwrap_or("data/klines").to_string();
+
+    let symbols: Vec<String> = match flag(flags, "symbols-file") {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("reading {path}"))?
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        None => {
+            let top: usize = flag_parse(flags, "top", 150);
+            println!("no --symbols-file; fetching top {top} by volume first...");
+            rest::top_symbols_by_volume(top)?
+        }
+    };
+
+    std::fs::create_dir_all(&out_dir)?;
+    let start_ms = chrono::Utc::now().timestamp_millis() - months * 30 * 86_400_000;
+    println!(
+        "downloading {interval} klines for {} symbols, ~{months} months each -> {out_dir}/",
+        symbols.len()
+    );
+
+    let mut ok = 0;
+    for (i, sym) in symbols.iter().enumerate() {
+        match rest::fetch_klines(sym, &interval, start_ms) {
+            Ok(candles) if !candles.is_empty() => {
+                let path = format!("{out_dir}/{sym}.ndjson");
+                candles::write_candles(&path, &candles)?;
+                ok += 1;
+                println!("  [{:>3}/{}] {sym}: {} bars", i + 1, symbols.len(), candles.len());
+            }
+            Ok(_) => println!("  [{:>3}/{}] {sym}: no data, skipped", i + 1, symbols.len()),
+            Err(e) => println!("  [{:>3}/{}] {sym}: error {e}", i + 1, symbols.len()),
+        }
+    }
+    println!("done. {ok}/{} symbols saved to {out_dir}/", symbols.len());
+    Ok(())
+}
+
+fn run_synth_klines(flags: &HashMap<String, String>) -> Result<()> {
+    let out_dir = flag(flags, "out-dir").unwrap_or("data/klines").to_string();
+    let n_symbols: usize = flag_parse(flags, "symbols", 12);
+    let bars: usize = flag_parse(flags, "bars", 4000);
+    let trendiness: f64 = flag_parse(flags, "trendiness", 0.5);
+    std::fs::create_dir_all(&out_dir)?;
+
+    let start = 1_700_000_000_000i64;
+    let step = 3_600_000i64; // 1h
+    for i in 0..n_symbols {
+        let candles = synth::gen_candles(bars, start, step, 100.0, 1000 + i as u64, trendiness);
+        let path = format!("{out_dir}/SYN{i:03}.ndjson");
+        candles::write_candles(&path, &candles)?;
+    }
+    println!("wrote {n_symbols} synthetic symbols x {bars} bars (trendiness {trendiness}) to {out_dir}/");
+    Ok(())
+}
+
+fn run_backtest_bars(flags: &HashMap<String, String>) -> Result<()> {
+    let dir = flag(flags, "dir").unwrap_or("data/klines");
+    let cfg = BarConfig {
+        entry_lookback: flag_parse(flags, "entry", 20),
+        exit_lookback: flag_parse(flags, "exit", 10),
+        fee_bps: flag_parse(flags, "fee-bps", 5.0),
+        slippage_bps: flag_parse(flags, "slippage-bps", 1.0),
+        notional: flag_parse(flags, "notional", 1000.0),
+        allow_short: !flags.contains_key("no-short"),
+        train_frac: flag_parse(flags, "train-frac", 0.7),
+        target_net_usdt: flag_parse(flags, "target", 0.02),
+    };
+
+    let files = candles::list_symbol_files(dir)?;
+    if files.is_empty() {
+        bail!("no *.ndjson symbol files in {dir}");
+    }
+
+    let mut trades: Vec<Trade> = Vec::new();
+    let mut symbols_traded = 0;
+    for (sym, path) in &files {
+        let candles = candles::read_candles(path)?;
+        let before = trades.len();
+        bars::run_symbol(sym, &candles, &cfg, &mut trades);
+        if trades.len() > before {
+            symbols_traded += 1;
+        }
+    }
+
+    println!(
+        "\nDonchian {}/{} breakout on {} symbols ({} traded)\n  \
+         fee={:.1}bps/side  slippage={:.1}bps  notional={} USDT  short={}  train_frac={}\n",
+        cfg.entry_lookback, cfg.exit_lookback, files.len(), symbols_traded,
+        cfg.fee_bps, cfg.slippage_bps, cfg.notional, cfg.allow_short, cfg.train_frac
+    );
+
+    if trades.is_empty() {
+        println!("no trades triggered.");
+        return Ok(());
+    }
+
+    let cutoff = bars::split_cutoff(&trades, cfg.train_frac);
+    let train: Vec<&Trade> = trades.iter().filter(|t| t.entry_time < cutoff).collect();
+    let test: Vec<&Trade> = trades.iter().filter(|t| t.entry_time >= cutoff).collect();
+    let ts = bars::summarize(&train, cfg.target_net_usdt);
+    let os = bars::summarize(&test, cfg.target_net_usdt);
+
+    println!(
+        "{:<14} {:>8} {:>16} {:>13} {:>13} {:>13} {:>9}",
+        "period", "trades", "win rate", "net/trade", "median", "total net", "hit tgt"
+    );
+    println!("{}", "-".repeat(92));
+    for (label, s) in [("in-sample", &ts), ("OUT-OF-SAMPLE", &os)] {
+        println!(
+            "{:<14} {:>8} {:>16} {:>+13.5} {:>+13.5} {:>+13.4} {:>8.1}%",
+            label, s.n,
+            format!("{:.1}% ({}/{})", s.win_rate * 100.0, s.wins, s.n),
+            s.net_per_trade, s.median_net, s.total_net, s.hit_target_rate * 100.0
+        );
+    }
+
+    // Breadth: how many symbols are net-positive out of sample (overfit check).
+    use std::collections::HashMap as Map;
+    let mut by_sym: Map<&str, f64> = Map::new();
+    for t in &test {
+        *by_sym.entry(t.symbol.as_str()).or_insert(0.0) += t.net_pnl;
+    }
+    let pos = by_sym.values().filter(|v| **v > 0.0).count();
+    println!(
+        "\nout-of-sample breadth: {pos}/{} symbols net-positive",
+        by_sym.len()
+    );
+
+    let verdict = if os.n < 30 {
+        "INCONCLUSIVE — too few out-of-sample trades"
+    } else if os.net_per_trade >= cfg.target_net_usdt {
+        "edge holds out-of-sample AND clears target"
+    } else if os.net_per_trade > 0.0 {
+        "positive out-of-sample but below target"
+    } else {
+        "no edge out-of-sample (likely in-sample overfit)"
+    };
+    println!("verdict: {verdict}");
+    println!(
+        "\nnote: this uses TODAY's liquid symbols on PAST data (survivorship bias) — \n\
+         real-world results will be somewhat worse than shown."
+    );
     Ok(())
 }
