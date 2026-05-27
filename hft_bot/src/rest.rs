@@ -22,10 +22,11 @@ struct Ticker24h {
 /// Top `n` USDT-margined perpetuals by 24h quote volume.
 pub fn top_symbols_by_volume(n: usize) -> Result<Vec<String>> {
     let url = format!("{FAPI}/fapi/v1/ticker/24hr");
-    let tickers: Vec<Ticker24h> = ureq::get(&url)
-        .call()
+    let tickers: Vec<Ticker24h> = reqwest::blocking::get(&url)
         .context("fetching 24h tickers")?
-        .into_json()
+        .error_for_status()
+        .context("24h tickers http status")?
+        .json()
         .context("parsing 24h tickers")?;
 
     let mut rows: Vec<(String, f64)> = tickers
@@ -61,10 +62,11 @@ pub fn fetch_klines(symbol: &str, interval: &str, start_ms: i64) -> Result<Vec<C
         let url = format!(
             "{FAPI}/fapi/v1/klines?symbol={symbol}&interval={interval}&startTime={cursor}&limit=1500"
         );
-        let rows: Vec<Vec<serde_json::Value>> = ureq::get(&url)
-            .call()
+        let rows: Vec<Vec<serde_json::Value>> = reqwest::blocking::get(&url)
             .with_context(|| format!("fetching klines for {symbol}"))?
-            .into_json()
+            .error_for_status()
+            .with_context(|| format!("klines http status for {symbol}"))?
+            .json()
             .with_context(|| format!("parsing klines for {symbol}"))?;
 
         if rows.is_empty() {
