@@ -93,9 +93,11 @@ python -m backtest.run --make-sample data/sample.csv
 
 ### Real Binance data
 
-`backtest.fetch` pulls live klines into a CSV the backtester reads. **It must
-run where api.binance.com is reachable** — sandboxed/CI environments usually
-allowlist it out (you'll get a clear "Host not in allowlist" / 403 error).
+`backtest.fetch` pulls live klines into a CSV the backtester reads. It tries
+the public market-data host `data-api.binance.vision` first (same `/api/v3`
+schema, no auth, **not geo-blocked**), then falls back to `api.binance.com`.
+That ordering matters: the main API returns **HTTP 451** in restricted regions
+and 403 in sandboxes — the `.vision` host avoids both. Override with `--base`.
 
 ```bash
 # 1. Fetch (run on a machine with network access). Pages back automatically

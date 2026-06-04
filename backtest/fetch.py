@@ -1,15 +1,18 @@
 """Fetch real OHLCV candles from Binance into a CSV the backtester reads.
 
-Binance is often allowlisted out of sandboxed/CI environments (you'll see
-"Host not in allowlist" or a connection error). Run this where you DO have
-network access to api.binance.com, then point `backtest.run --csv` at the
+Run this where you have network access, then point `backtest.run --csv` at the
 output file.
 
     python -m backtest.fetch --symbol BTCUSDT --interval 1h --bars 5000 \
         --out data/BTCUSDT_1h.csv
 
     python -m backtest.run --csv data/BTCUSDT_1h.csv --strategy both
-    python -m backtest.run --csv data/BTCUSDT_1h.csv --no-split
+    python -m backtest.run --csv data/BTCUSDT_1h.csv --walk-forward
+
+Endpoints: the main api.binance.com is geo-blocked in some regions (HTTP 451)
+and allowlisted out of many sandboxes (403 / connection error). So we try the
+public market-data host data-api.binance.vision FIRST — same /api/v3 schema,
+no auth, not geo-blocked — and fall back to the others. Override with --base.
 
 The klines endpoint caps at 1000 bars per request, so this pages backwards
 from the most recent bar until it has `--bars` of them.
@@ -25,7 +28,13 @@ import requests
 
 from .data import Candle, write_sample_csv
 
-BASE = "https://api.binance.com/api/v3/klines"
+KLINES_PATH = "/api/v3/klines"
+# Tried in order; first one that answers 200 is used for the whole run.
+DEFAULT_BASES = [
+    "https://data-api.binance.vision",  # public data mirror, no geoblock/auth
+    "https://api.binance.com",          # main API (451 in blocked regions)
+    "https://api-gcp.binance.com",      # alternate main cluster
+]
 MAX_PER_REQ = 1000
 VALID_INTERVALS = {
     "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h",
@@ -33,13 +42,41 @@ VALID_INTERVALS = {
 }
 
 
-def fetch(symbol: str, interval: str, bars: int,
+def _pick_base(session: requests.Session, bases: list[str],
+               symbol: str, interval: str) -> str:
+    """Probe candidate hosts with a 1-bar request; return the first that works."""
+    errors = []
+    for base in bases:
+        try:
+            resp = session.get(
+                base + KLINES_PATH,
+                params={"symbol": symbol.upper(), "interval": interval, "limit": 1},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                if base != bases[0]:
+                    print(f"  using endpoint {base}", file=sys.stderr)
+                return base
+            errors.append(f"{base}: HTTP {resp.status_code}")
+        except requests.RequestException as e:
+            errors.append(f"{base}: {e}")
+    raise RuntimeError(
+        "no Binance endpoint reachable. Tried:\n  " + "\n  ".join(errors) + "\n"
+        "451 = geo-blocked region, 403/connection = network blocks the host.\n"
+        "Try a VPN, pass --base <url>, or download a CSV from "
+        "https://data.binance.vision and use --csv directly."
+    )
+
+
+def fetch(symbol: str, interval: str, bars: int, bases: list[str] | None = None,
           max_retries: int = 4, backoff: float = 2.0) -> list[Candle]:
     """Page backwards through Binance klines until `bars` candles are gathered."""
     if interval not in VALID_INTERVALS:
         raise ValueError(f"interval {interval!r} not in {sorted(VALID_INTERVALS)}")
 
     session = requests.Session()
+    base = _pick_base(session, bases or DEFAULT_BASES, symbol, interval)
+
     collected: list[Candle] = []
     end_time: int | None = None  # ms; None = most recent
 
@@ -49,7 +86,7 @@ def fetch(symbol: str, interval: str, bars: int,
         if end_time is not None:
             params["endTime"] = end_time
 
-        rows = _get(session, params, max_retries, backoff)
+        rows = _get(session, base, params, max_retries, backoff)
         if not rows:
             break  # ran out of history
 
@@ -76,12 +113,12 @@ def fetch(symbol: str, interval: str, bars: int,
     return deduped[-bars:]
 
 
-def _get(session: requests.Session, params: dict,
+def _get(session: requests.Session, base: str, params: dict,
          max_retries: int, backoff: float) -> list:
     last_err = None
     for attempt in range(max_retries):
         try:
-            resp = session.get(BASE, params=params, timeout=30)
+            resp = session.get(base + KLINES_PATH, params=params, timeout=30)
             if resp.status_code == 429:  # rate limited
                 wait = backoff ** (attempt + 2)
                 print(f"  rate limited (429); sleeping {wait:.0f}s", file=sys.stderr)
@@ -94,11 +131,7 @@ def _get(session: requests.Session, params: dict,
             wait = backoff ** attempt
             print(f"  request failed ({e}); retry in {wait:.0f}s", file=sys.stderr)
             time.sleep(wait)
-    raise RuntimeError(
-        f"failed to reach Binance after {max_retries} tries: {last_err}\n"
-        "If this is 'Host not in allowlist' or a connection error, the network "
-        "blocks api.binance.com here — run this where you have network access."
-    )
+    raise RuntimeError(f"failed to reach {base} after {max_retries} tries: {last_err}")
 
 
 def main() -> None:
@@ -108,10 +141,13 @@ def main() -> None:
                    help=f"one of {sorted(VALID_INTERVALS)}")
     p.add_argument("--bars", type=int, default=5000)
     p.add_argument("--out", required=True, help="output CSV path")
+    p.add_argument("--base", action="append", metavar="URL",
+                   help="override endpoint host (repeatable); default tries "
+                        "data-api.binance.vision then api.binance.com")
     args = p.parse_args()
 
     print(f"Fetching {args.bars} x {args.interval} candles for {args.symbol} ...")
-    candles = fetch(args.symbol, args.interval, args.bars)
+    candles = fetch(args.symbol, args.interval, args.bars, bases=args.base)
     if not candles:
         print("No candles returned.", file=sys.stderr)
         sys.exit(1)
