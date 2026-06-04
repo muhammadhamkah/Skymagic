@@ -11,14 +11,19 @@ bot?"
 ## TL;DR finding
 
 No — not on its own. The indicator is a **descriptive lens** (where volume has
-already traded), not a **predictive edge**. Tested across 40 random-walk seeds,
-both shipped strategies have **negative expected edge vs. buy-and-hold** once a
-0.1% fee is applied. Any single run that beats hold is noise, not alpha.
+already traded), not a **predictive edge**. The reproducible robustness check:
 
 ```
-revert_poc  | mean edge  -9.35% | beat-hold 20/40 seeds   (coin flip)
-breakout    | mean edge -23.27% | beat-hold 12/40 seeds
+$ python -m backtest.run --synthetic --seeds 40
+
+  revert_poc  | mean -31.86% | median -20.82% | std 59.63% | beat-hold 14/40 | t=-3.38
+  breakout    | mean -42.03% | median -35.61% | std 50.24% | beat-hold  7/40 | t=-5.29
 ```
+
+Across 40 random-walk seeds, both shipped strategies have **negative expected
+edge vs. buy-and-hold** once 0.1% commission + 5bps slippage are applied — and
+the negativity is statistically significant (|t| > 3). Any single run that
+beats hold is noise (usually just sitting in cash during a drop), not alpha.
 
 A backtester can't *manufacture* an edge. It can only tell you honestly whether
 one exists — and here, on data with no real pattern, it correctly says it
@@ -37,15 +42,32 @@ This harness deliberately avoids that:
   (`[t-window .. t-1]`), never a pivot — so every decision uses only
   information available at that moment.
 - Signals at bar `t` are **filled at bar `t+1`'s open**, never the same bar.
-- Fees are charged on **every** buy and sell.
-- Results are split **in-sample / out-of-sample**; the OOS number is the one
-  that counts. An edge that only shows in-sample is overfitting.
+- **Commission + slippage** are charged on every buy and sell, adversarially
+  (buy above the open, sell below it). For a Convert-style venue set `--fee 0`
+  and `--slippage` to the quoted spread.
+- It reports what makes a comparison fair: **time-in-market** (the strategy
+  sits in cash, so its risk ≠ hold's), **hold's drawdown** alongside the
+  strategy's, and a **±95% band on win rate** (win rate ≠ profit).
+
+### Honest limitations (flagged by review, not yet fixed)
+
+- The in/out-of-sample split is a **two-period stability check, not an
+  overfitting test** — there is no parameter optimization here to overfit.
+  Real validation needs **walk-forward** (rolling re-optimization, forward-only
+  evaluation).
+- Fills are assumed **full, immediate and impact-free** beyond the flat
+  slippage term; `volume` is loaded but not used to cap fill size.
+- Synthetic GBM is a clean **null hypothesis** (no edge to find), not a
+  realistic stress test — it lacks fat tails and volatility clustering.
 
 ## Usage
 
 ```bash
-# Offline demo on synthetic random data (shows the fee drag):
+# Offline demo on synthetic random data (shows the fee+slippage drag):
 python -m backtest.run --synthetic --strategy both
+
+# Reproducible robustness check — the number to actually trust:
+python -m backtest.run --synthetic --seeds 40
 
 # Real data: a raw Binance-klines CSV or a headered OHLCV CSV.
 # Download where you have network access (the API is allowlisted out of CI):

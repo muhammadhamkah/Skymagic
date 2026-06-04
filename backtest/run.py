@@ -17,8 +17,39 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import statistics as st
 
 from . import data, engine
+
+
+def _seed_sweep(strategies: list[str], n_seeds: int, bars: int, drift: float,
+                common: dict) -> None:
+    """Reproducible robustness check: run each strategy over many random seeds.
+
+    A single seed is one lucky/unlucky path; the distribution across seeds is
+    the honest signal. Reports mean, median, spread and how often the strategy
+    beats hold (~50% with a negative mean = no edge, just coin-flip noise).
+    """
+    print(f"Robustness sweep: {n_seeds} random seeds, {bars} bars each, drift={drift}\n")
+    for strat in strategies:
+        edges = []
+        for seed in range(n_seeds):
+            candles = data.synthetic(n=bars, drift=drift, seed=seed)
+            r = engine.run(candles, strategy=strat, **common)
+            edges.append(r.strategy_return - r.buy_hold_return)
+        beat = sum(1 for e in edges if e > 0)
+        stdev = st.pstdev(edges) if len(edges) > 1 else 0.0
+        # t-stat for "mean edge != 0"
+        tstat = (st.mean(edges) / (stdev / len(edges) ** 0.5)) if stdev else 0.0
+        print(
+            f"  {strat:11s} | mean {st.mean(edges):+7.2%} | median {st.median(edges):+7.2%} "
+            f"| std {stdev:6.2%} | beat-hold {beat:2d}/{n_seeds} | t={tstat:+.2f}"
+        )
+    print(
+        "\n  Read: beat-hold ~= half the seeds AND mean edge <= 0 means no edge —\n"
+        "  the wins are noise. |t| < ~2 means even the mean isn't distinguishable\n"
+        "  from zero at this sample size.\n"
+    )
 
 
 def main() -> None:
@@ -37,10 +68,16 @@ def main() -> None:
     p.add_argument("--rows", type=int, default=25, help="profile price levels")
     p.add_argument("--value-area", type=float, default=0.68)
     p.add_argument("--fee", type=float, default=0.001,
-                   help="per-side fee fraction (0.001 = 0.1%% taker)")
+                   help="per-side commission fraction (0.001 = 0.1%% taker)")
+    p.add_argument("--slippage", type=float, default=0.0005,
+                   help="per-side spread+slippage fraction (0.0005 = 5 bps)")
     p.add_argument("--drift", type=float, default=0.0,
                    help="synthetic per-bar drift (0 = no upward bias)")
     p.add_argument("--bars", type=int, default=4000, help="synthetic bar count")
+    p.add_argument("--seed", type=int, default=7, help="synthetic RNG seed")
+    p.add_argument("--seeds", type=int, metavar="N",
+                   help="synthetic-only: sweep N seeds and report the edge "
+                        "distribution (the reproducible robustness check)")
     p.add_argument("--no-split", action="store_true",
                    help="report one run instead of in/out-of-sample")
     args = p.parse_args()
@@ -50,20 +87,27 @@ def main() -> None:
         print(f"wrote synthetic sample -> {args.make_sample}")
         return
 
+    strategies = ["revert_poc", "breakout"] if args.strategy == "both" else [args.strategy]
+    common = dict(window=args.window, rows=args.rows,
+                  value_area=args.value_area, fee=args.fee, slippage=args.slippage)
+
+    if args.seeds:
+        if args.csv:
+            p.error("--seeds works with synthetic data only (omit --csv)")
+        _seed_sweep(strategies, args.seeds, args.bars, args.drift, common)
+        return
+
     if args.csv:
         candles = data.load_csv(args.csv)
         source = args.csv
     else:
-        candles = data.synthetic(n=args.bars, drift=args.drift)
-        source = (f"SYNTHETIC random walk (drift={args.drift}, {args.bars} bars) "
-                  "— no real edge exists in this data by construction")
+        candles = data.synthetic(n=args.bars, drift=args.drift, seed=args.seed)
+        source = (f"SYNTHETIC random walk (drift={args.drift}, {args.bars} bars, "
+                  f"seed={args.seed}) — no real edge exists by construction. One "
+                  "seed is one path; use --seeds for the honest picture.")
 
     print(f"\nData: {source}")
     print(f"Loaded {len(candles)} candles.\n")
-
-    strategies = ["revert_poc", "breakout"] if args.strategy == "both" else [args.strategy]
-    common = dict(window=args.window, rows=args.rows,
-                  value_area=args.value_area, fee=args.fee)
 
     for strat in strategies:
         if args.no_split:
@@ -75,9 +119,11 @@ def main() -> None:
         print("-" * 60)
 
     print(
-        "\nReminder: a positive in-sample edge that vanishes (or goes negative)\n"
-        "out-of-sample is overfitting, not alpha. On synthetic random data the\n"
-        "honest expectation is: strategy return <= buy & hold once fees apply.\n"
+        "\nNote: the in/out-of-sample split here is a two-period STABILITY check,\n"
+        "not an overfitting test — there is no parameter optimization to overfit.\n"
+        "A single seed/period can beat hold by luck (often just by sitting in cash\n"
+        "during a drop). Run --seeds N for the reproducible, distribution-level\n"
+        "verdict, which is the number to trust.\n"
     )
 
 
