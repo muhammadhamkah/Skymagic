@@ -80,6 +80,13 @@ def main() -> None:
                         "distribution (the reproducible robustness check)")
     p.add_argument("--no-split", action="store_true",
                    help="report one run instead of in/out-of-sample")
+    p.add_argument("--walk-forward", action="store_true",
+                   help="rolling re-optimization, forward-only evaluation "
+                        "(the honest validation; tunes params per fold)")
+    p.add_argument("--train", type=int, default=1500,
+                   help="walk-forward: in-sample bars per fold")
+    p.add_argument("--test", type=int, default=300,
+                   help="walk-forward: forward (out-of-sample) bars per fold")
     args = p.parse_args()
 
     if args.make_sample:
@@ -108,6 +115,22 @@ def main() -> None:
 
     print(f"\nData: {source}")
     print(f"Loaded {len(candles)} candles.\n")
+
+    if args.walk_forward:
+        need = args.train + args.test
+        if len(candles) < need:
+            p.error(f"need >= {need} candles for --train {args.train} "
+                    f"--test {args.test}; have {len(candles)}")
+        wf = engine.walk_forward(candles, train=args.train, test=args.test,
+                                 rows=args.rows, fee=args.fee, slippage=args.slippage)
+        print(wf.summary())
+        print(
+            "\nThis is the number to trust for 'would the bot work': params are\n"
+            "re-tuned only on past bars and judged only on later ones. A positive\n"
+            "stitched OOS edge here is real evidence; a negative one means the\n"
+            "in-sample tuning was fitting noise.\n"
+        )
+        return
 
     for strat in strategies:
         if args.no_split:

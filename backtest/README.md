@@ -49,12 +49,30 @@ This harness deliberately avoids that:
   sits in cash, so its risk ≠ hold's), **hold's drawdown** alongside the
   strategy's, and a **±95% band on win rate** (win rate ≠ profit).
 
+### Walk-forward validation (the honest test)
+
+`--walk-forward` is the validation to actually trust. It **tunes parameters on
+a trailing in-sample window, then trades the next segment forward with those
+frozen params**, rolling through the whole series and stitching the forward
+segments into one equity curve. Params are only ever chosen from the past, so
+the result estimates what an *adaptive* bot would really have done live.
+
+```bash
+python -m backtest.run --synthetic --bars 5000 --walk-forward --train 1500 --test 300
+```
+
+It prints a per-fold table; watch the chosen params **churn** fold-to-fold —
+that instability is the overfitting an ordinary split can't surface. On
+synthetic (edgeless) data the stitched out-of-sample return correctly loses to
+buy-and-hold.
+
 ### Honest limitations (flagged by review, not yet fixed)
 
-- The in/out-of-sample split is a **two-period stability check, not an
-  overfitting test** — there is no parameter optimization here to overfit.
-  Real validation needs **walk-forward** (rolling re-optimization, forward-only
-  evaluation).
+- The plain in/out-of-sample split (`run_split`) is only a **two-period
+  stability check, not an overfitting test** — use `--walk-forward` for real
+  validation.
+- The walk-forward objective maximizes **net return** on the training window;
+  swapping in a risk-adjusted objective (Sharpe) would be a reasonable variant.
 - Fills are assumed **full, immediate and impact-free** beyond the flat
   slippage term; `volume` is loaded but not used to cap fill size.
 - Synthetic GBM is a clean **null hypothesis** (no edge to find), not a
@@ -109,7 +127,8 @@ Spot only: long/flat, no shorting, no leverage.
 |------|------|
 | `data.py` | load candles from CSV; synthetic GBM generator |
 | `volume_profile.py` | POC / VAH / VAL from a window of closed bars |
-| `engine.py` | signal generation, fee-aware fills, metrics, in/out-of-sample |
+| `engine.py` | signals, fee+slippage fills, metrics, split + walk-forward |
+| `fetch.py` | pull real Binance klines into a CSV (run where network allows) |
 | `run.py` | CLI |
 
 ## What would come next (with real risk)

@@ -200,3 +200,135 @@ def run_split(candles: list[Candle], strategy: str, split: float = 0.6,
     in_sample = run(candles[:cut], strategy=strategy, label="in-sample", **kwargs)
     out_sample = run(candles[cut:], strategy=strategy, label="out-of-sample", **kwargs)
     return in_sample, out_sample
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward validation
+# ---------------------------------------------------------------------------
+# The default parameter search space. Walk-forward tunes over this on each
+# trailing in-sample window, then trades the winner forward — never the other
+# way round, so the stitched out-of-sample curve is an honest estimate of what
+# an adaptive bot would actually have done live.
+DEFAULT_GRID: list[dict] = [
+    {"strategy": s, "window": w, "value_area": va}
+    for s in ("revert_poc", "breakout")
+    for w in (24, 48, 96)
+    for va in (0.60, 0.68, 0.80)
+]
+
+
+@dataclass
+class Fold:
+    start_bar: int
+    strategy: str
+    window: int
+    value_area: float
+    oos_return: float      # this fold's forward (test) return, net of costs
+    hold_return: float
+    n_trades: int
+
+
+@dataclass
+class WalkForwardResult:
+    n_folds: int
+    strategy_return: float    # compounded across all forward folds
+    buy_hold_return: float    # compounded hold over the same forward region
+    max_drawdown: float
+    win_folds: int            # folds that beat hold
+    folds: list[Fold]
+
+    def summary(self) -> str:
+        edge = self.strategy_return - self.buy_hold_return
+        verdict = "BEATS" if edge > 0 else "LOSES TO"
+        lines = [
+            "WALK-FORWARD (tune on past, trade forward only)",
+            f"  folds              : {self.n_folds}  "
+            f"(beat hold in {self.win_folds}/{self.n_folds})",
+            f"  stitched OOS return: {self.strategy_return:+8.2%}  (net of costs)",
+            f"  buy & hold return  : {self.buy_hold_return:+8.2%}",
+            f"  edge vs hold       : {edge:+8.2%}   -> {verdict} hold",
+            f"  max drawdown       : {self.max_drawdown:8.2%}",
+            "",
+            "  per fold (note how the 'best' params jump around — that churn",
+            "  is the overfitting the single split could not show):",
+            f"    {'bar':>6} {'strategy':>10} {'win':>4} {'VA':>5} "
+            f"{'trades':>6} {'OOS':>8} {'hold':>8}",
+        ]
+        for f in self.folds:
+            lines.append(
+                f"    {f.start_bar:>6} {f.strategy:>10} {f.window:>4} "
+                f"{f.value_area:>5.2f} {f.n_trades:>6} "
+                f"{f.oos_return:>+8.2%} {f.hold_return:>+8.2%}"
+            )
+        return "\n".join(lines) + "\n"
+
+
+def optimize(candles: list[Candle], grid: list[dict], rows: int,
+             fee: float, slippage: float) -> dict:
+    """Pick the parameter set with the highest net return on `candles`.
+
+    This is the step that *creates* overfitting risk — it chases whatever
+    happened to work in-sample. Walk-forward exists precisely to measure how
+    much of that "edge" survives out-of-sample.
+    """
+    best_cfg = grid[0]
+    best_score = float("-inf")
+    for cfg in grid:
+        r = run(candles, strategy=cfg["strategy"], window=cfg["window"],
+                rows=rows, value_area=cfg["value_area"], fee=fee, slippage=slippage)
+        if r.strategy_return > best_score:
+            best_score = r.strategy_return
+            best_cfg = cfg
+    return best_cfg
+
+
+def walk_forward(
+    candles: list[Candle],
+    train: int = 1500,
+    test: int = 300,
+    rows: int = 25,
+    fee: float = 0.001,
+    slippage: float = 0.0005,
+    grid: list[dict] | None = None,
+) -> WalkForwardResult:
+    """Rolling re-optimization, forward-only evaluation.
+
+    For each step: tune params on the trailing `train` bars, then trade the
+    next `test` bars with those frozen params. The test bars are strictly
+    later than the bars used to choose the params (a few preceding bars are
+    reused only to warm up the profile, which is past data, not lookahead).
+    Forward segments are stitched into one equity curve.
+    """
+    grid = grid or DEFAULT_GRID
+    folds: list[Fold] = []
+    strat_equity = 1.0
+    hold_equity = 1.0
+    curve: list[float] = []
+    win_folds = 0
+
+    i = train
+    while i + test <= len(candles):
+        cfg = optimize(candles[i - train:i], grid, rows, fee, slippage)
+        w = cfg["window"]
+        # eval slice = [w warmup bars] + [test bars]; trading starts at global i
+        eval_slice = candles[i - w:i + test]
+        seg = run(eval_slice, strategy=cfg["strategy"], window=w, rows=rows,
+                  value_area=cfg["value_area"], fee=fee, slippage=slippage)
+
+        strat_equity *= 1 + seg.strategy_return
+        hold_equity *= 1 + seg.buy_hold_return
+        curve.append(strat_equity)
+        if seg.strategy_return > seg.buy_hold_return:
+            win_folds += 1
+        folds.append(Fold(i, cfg["strategy"], w, cfg["value_area"],
+                          seg.strategy_return, seg.buy_hold_return, seg.n_trades))
+        i += test
+
+    return WalkForwardResult(
+        n_folds=len(folds),
+        strategy_return=strat_equity - 1.0,
+        buy_hold_return=hold_equity - 1.0,
+        max_drawdown=_max_drawdown(curve),
+        win_folds=win_folds,
+        folds=folds,
+    )
