@@ -69,15 +69,30 @@ python -m backtest.run --synthetic --strategy both
 # Reproducible robustness check — the number to actually trust:
 python -m backtest.run --synthetic --seeds 40
 
-# Real data: a raw Binance-klines CSV or a headered OHLCV CSV.
-# Download where you have network access (the API is allowlisted out of CI):
-#   https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1000
-#   https://data.binance.vision   (bulk historical dumps)
-python -m backtest.run --csv data/BTCUSDT_1h.csv --strategy revert_poc
-
 # Inspect the expected CSV schema:
 python -m backtest.run --make-sample data/sample.csv
 ```
+
+### Real Binance data
+
+`backtest.fetch` pulls live klines into a CSV the backtester reads. **It must
+run where api.binance.com is reachable** — sandboxed/CI environments usually
+allowlist it out (you'll get a clear "Host not in allowlist" / 403 error).
+
+```bash
+# 1. Fetch (run on a machine with network access). Pages back automatically
+#    past the 1000-bars-per-request cap.
+python -m backtest.fetch --symbol BTCUSDT --interval 1h --bars 5000 \
+    --out data/BTCUSDT_1h.csv
+
+# 2. Backtest the real candles:
+python -m backtest.run --csv data/BTCUSDT_1h.csv --strategy both
+
+# Already have a CSV? Any raw Binance-klines dump (e.g. from
+# https://data.binance.vision) or a headered OHLCV file works directly.
+```
+
+`data/` and `*.csv` are gitignored, so fetched history is never committed.
 
 ## Strategies
 
