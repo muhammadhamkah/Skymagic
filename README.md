@@ -64,19 +64,60 @@ python -m dronecam export    examples/sample_show.json path.json \
      Constraint warnings : 0
 ```
 
-## Importing a Blender show
+## Blender add-on (plan inside Blender)
 
-Run [`tools/blender_export.py`](tools/blender_export.py) inside Blender to write
-the show JSON. Put your drone objects in a collection (default name `Drones`):
+The easiest way to use this on a real show is the bundled Blender add-on. It
+reads the drones straight from your scene, builds a **real animated camera you
+can scrub and look through** to preview the footage, and exports the mission —
+all from a sidebar panel.
+
+**Install**
 
 ```bash
-blender show.blend --background --python tools/blender_export.py -- \
-    --collection "Drones" --output show.json
+python build_addon.py            # writes dist/drone_camera_planner.zip
 ```
 
-The exporter samples every object's world-space position on every frame and
-writes Blender's native Z-up coordinates. See `dronecam/show.py` for the JSON
-schema (you can also hand-author it, or import a flat `frame,drone,x,y,z` CSV).
+In Blender: *Edit > Preferences > Add-ons > Install...*, pick the zip, enable
+**Drone Camera Planner**. A **Drone Cam** tab appears in the 3D viewport sidebar
+(press `N`). The add-on vendors the dependency-free `dronecam` package, so no
+`pip install` inside Blender is needed.
+
+**Use**
+
+1. **Show drones** — choose how to find the drones. For shows whose objects are
+   named like `UAV_000329`, use *Name prefix* `UAV_`. (Or pick a collection, or
+   just select the drone objects.)
+2. **Frame range** — *Use scene frame range* (or set your own). Raise *Sample
+   step* for very long shows — at step 25 a 15,000-frame show is ~600 samples,
+   which plans in a couple of seconds.
+3. **Camera & shot** — pick a camera preset and a mode (`orbit`/`static`/`flyby`)
+   and nudge *elevation*, *azimuth*, *orbit sweep* and *frame fill*.
+4. **Generate Camera Path** — creates/updates a `DroneCam` object animated along
+   the path and makes it the active camera. Press `Numpad 0` to look through it
+   and scrub the timeline to preview. The coverage report shows up in the panel.
+5. **Venue origin** — enter the venue latitude/longitude (and the compass
+   heading of the scene's +Y axis), then **Export Mission**.
+
+## Importing a Blender show (headless / CLI)
+
+Prefer the CLI? Run [`tools/blender_export.py`](tools/blender_export.py) inside
+Blender to write the show JSON, then use the `dronecam` commands. Select drones
+by name prefix (matches `UAV_…` objects), by collection, or by selection:
+
+```bash
+# 500-drone festival show named UAV_*, sampling every 25th frame:
+blender wilderness_500_2023_flyable.blend --background \
+    --python tools/blender_export.py -- \
+    --prefix "UAV_" --step 25 --output wilderness.json
+
+python -m dronecam plan     wilderness.json -o path.json --mode orbit --preset long-lens
+python -m dronecam simulate  wilderness.json path.json --preset long-lens
+python -m dronecam export    wilderness.json path.json --lat <LAT> --lon <LON> -o out
+```
+
+The exporter samples every object's world-space position and writes Blender's
+native Z-up coordinates. See `dronecam/show.py` for the JSON schema (you can also
+hand-author it, or import a flat `frame,drone,x,y,z` CSV).
 
 ## Planning modes
 
@@ -126,7 +167,12 @@ dronecam/            the package
   export.py          mission/Litchi/KML/timeline export
   cli.py             command-line interface (python -m dronecam)
   samples.py         synthetic show generator (demos/tests)
-tools/blender_export.py   run inside Blender to export a show
+tools/blender_export.py   run inside Blender to export a show (headless/CLI)
+blender_addon/            the "Drone Camera Planner" Blender add-on
+  drone_camera_planner/
+    __init__.py           bl_info, properties, operators, sidebar panel
+    bridge.py             scene<->dronecam glue + animated-camera builder
+build_addon.py            bundles the add-on (+ vendored dronecam) into dist/*.zip
 examples/sample_show.json a small ready-to-use show
 tests/               unittest suite (python -m unittest discover -s tests)
 ```

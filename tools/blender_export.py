@@ -41,36 +41,58 @@ def parse_args(argv):
     else:
         argv = []
     p = argparse.ArgumentParser(description="Export drone show to dronecam JSON")
-    p.add_argument("--collection", default="Drones",
-                   help="name of the collection holding the drone objects")
+    p.add_argument("--collection", default=None,
+                   help="export objects in this collection")
+    p.add_argument("--prefix", default=None,
+                   help="export objects whose name starts with this (e.g. UAV_)")
     p.add_argument("--output", default="show.json")
     p.add_argument("--scale", type=float, default=1.0,
                    help="multiply all coordinates (e.g. if scene is not in metres)")
+    p.add_argument("--step", type=int, default=1,
+                   help="sample every Nth frame (use >1 for very long shows)")
+    p.add_argument("--start", type=int, default=None, help="first frame (default scene start)")
+    p.add_argument("--end", type=int, default=None, help="last frame (default scene end)")
     p.add_argument("--name", default=None, help="show name (defaults to .blend name)")
     return p.parse_args(argv)
 
 
-def collect_drone_objects(collection_name):
-    coll = bpy.data.collections.get(collection_name)
-    if coll is None:
-        raise SystemExit(f"Collection '{collection_name}' not found in scene.")
+def collect_drone_objects(collection_name, prefix):
+    """Resolve the drone objects by collection, by name prefix, or by selection.
+
+    Priority: explicit ``--collection`` -> ``--prefix`` -> current selection.
+    """
+    if collection_name:
+        coll = bpy.data.collections.get(collection_name)
+        if coll is None:
+            raise SystemExit(f"Collection '{collection_name}' not found in scene.")
+        objs = list(coll.all_objects)
+    elif prefix:
+        objs = [o for o in bpy.data.objects if o.name.startswith(prefix)]
+        if not objs:
+            raise SystemExit(f"No objects whose name starts with '{prefix}'.")
+    else:
+        objs = list(bpy.context.selected_objects)
+        if not objs:
+            raise SystemExit(
+                "No drones specified. Pass --collection NAME or --prefix UAV_, "
+                "or select the drone objects before running."
+            )
     # Stable ordering so drone indices are consistent across frames.
-    return sorted(coll.all_objects, key=lambda o: o.name)
+    return sorted(objs, key=lambda o: o.name)
 
 
 def main():
     args = parse_args(sys.argv)
     scene = bpy.context.scene
-    objects = collect_drone_objects(args.collection)
-    if not objects:
-        raise SystemExit(f"No objects in collection '{args.collection}'.")
+    objects = collect_drone_objects(args.collection, args.prefix)
 
     fps = scene.render.fps / scene.render.fps_base
-    f_start = scene.frame_start
-    f_end = scene.frame_end
+    f_start = args.start if args.start is not None else scene.frame_start
+    f_end = args.end if args.end is not None else scene.frame_end
+    step = max(1, args.step)
 
     frames = []
-    for f in range(f_start, f_end + 1):
+    for f in range(f_start, f_end + 1, step):
         scene.frame_set(f)
         points = []
         for obj in objects:
