@@ -30,6 +30,7 @@ class SampleRecord:
     climb_mps: float
     yaw_rate_dps: float
     gimbal_rate_dps: float
+    clearance_m: float = float("inf")  # distance to nearest drone at this instant
     violations: List[str] = field(default_factory=list)
 
 
@@ -47,14 +48,19 @@ class SimulationResult:
     max_yaw_rate_dps: float
     max_gimbal_rate_dps: float
     violation_count: int
+    min_clearance_m: float = float("inf")  # closest the camera gets to any drone
+    safety_radius_m: float = 0.0
     violation_summary: dict = field(default_factory=dict)
 
     def report(self) -> str:
         """Human-readable multi-line summary."""
+        clr = ("  n/a" if self.min_clearance_m == float("inf")
+               else f"{self.min_clearance_m:6.1f} m")
         lines = [
             f"Coverage score      : {self.coverage_score:6.1%}",
             f"Fully framed frames : {self.fully_framed_fraction:6.1%}",
             f"Visible drones      : mean {self.mean_visible:5.1%}  min {self.min_visible:5.1%}",
+            f"Min show clearance  : {clr}  (safety {self.safety_radius_m:.0f} m)",
             f"Max speed           : {self.max_speed_mps:6.2f} m/s",
             f"Max climb/descent   : {self.max_climb_mps:6.2f} m/s",
             f"Max yaw rate        : {self.max_yaw_rate_dps:6.1f} deg/s",
@@ -74,8 +80,14 @@ def simulate(
     path: CameraPath,
     sample_fps: float | None = None,
     safe_margin: float = 0.12,
+    safety_radius_m: float = 5.0,
 ) -> SimulationResult:
-    """Run the capture simulation and return a :class:`SimulationResult`."""
+    """Run the capture simulation and return a :class:`SimulationResult`.
+
+    ``safety_radius_m`` is the minimum allowed distance between the camera drone
+    and any show drone; getting closer raises a ``clearance`` warning so the
+    camera path can be checked for collisions with the show.
+    """
     engine = FramingEngine(camera, safe_margin=safe_margin)
     fps = sample_fps or show.fps or 24.0
     dt = 1.0 / fps
@@ -94,8 +106,13 @@ def simulate(
         points = show.points_at(t)
         metrics = engine.evaluate(pose, points, t)
 
+        clearance = min(((p - pose.position).length() for p in points),
+                        default=float("inf"))
+
         speed = climb = yaw_rate = gimbal_rate = 0.0
         violations: List[str] = []
+        if clearance < safety_radius_m:
+            violations.append("clearance")
         if prev_pose is not None and prev_t is not None:
             step_dt = max(t - prev_t, 1e-6)
             delta = pose.position - prev_pose.position
@@ -125,18 +142,20 @@ def simulate(
                 climb_mps=climb,
                 yaw_rate_dps=yaw_rate,
                 gimbal_rate_dps=gimbal_rate,
+                clearance_m=clearance,
                 violations=violations,
             )
         )
         prev_pose = pose
         prev_t = t
 
-    return _aggregate(samples)
+    return _aggregate(samples, safety_radius_m)
 
 
-def _aggregate(samples: List[SampleRecord]) -> SimulationResult:
+def _aggregate(samples: List[SampleRecord], safety_radius_m: float = 0.0) -> SimulationResult:
     if not samples:
-        return SimulationResult([], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, {})
+        return SimulationResult([], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0,
+                                safety_radius_m=safety_radius_m)
 
     n = len(samples)
     coverage = sum(s.metrics.score for s in samples) / n
@@ -163,5 +182,7 @@ def _aggregate(samples: List[SampleRecord]) -> SimulationResult:
         max_yaw_rate_dps=max(s.yaw_rate_dps for s in samples),
         max_gimbal_rate_dps=max(s.gimbal_rate_dps for s in samples),
         violation_count=violation_count,
+        min_clearance_m=min(s.clearance_m for s in samples),
+        safety_radius_m=safety_radius_m,
         violation_summary=violation_summary,
     )

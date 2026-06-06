@@ -155,6 +155,10 @@ class DCPProperties(PropertyGroup):
         name="Smoothness (kf/s)", default=2.0, min=0.5, max=10.0,
         description="Keyframes baked per second along the smoothed path",
     )
+    safety_radius: FloatProperty(
+        name="Safety clearance (m)", default=5.0, min=0.0,
+        description="Warn if the camera gets closer than this to any show drone",
+    )
     record_transitions: BoolProperty(
         name="Record during transitions", default=True,
         description="Keep recording while repositioning between scenes",
@@ -352,6 +356,7 @@ class DCP_PT_panel(Panel):
         box.label(text="Camera", icon="CAMERA_DATA")
         box.prop(p, "preset")
         box.prop(p, "fill")
+        box.prop(p, "safety_radius")
 
         box = layout.box()
         box.label(text="Scenes / shots", icon="SEQUENCE")

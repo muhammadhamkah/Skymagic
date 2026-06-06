@@ -23,6 +23,7 @@ from dronecam.show import DroneShow, ShowFrame
 from dronecam.simulation import simulate
 
 CAMERA_OBJECT_NAME = "DroneCam"
+PATH_OBJECT_NAME = "DroneCamPath"
 
 # Hard cap on how many frames we sample from the timeline. Each sample triggers
 # a full scene evaluation, so this bounds the (UI-blocking) planning cost
@@ -202,7 +203,9 @@ def plan_and_build(context):
             "Empty path. Add scenes with waypoint Empties, or check the show."
         )
     build_camera_object(context, show, path, camera)
-    result = simulate(show, camera, path)
+    build_path_visual(context, show, camera, path)
+    result = simulate(show, camera, path,
+                      safety_radius_m=context.scene.dcp.safety_radius)
     return show, path, camera, result
 
 
@@ -273,6 +276,45 @@ def build_camera_object(context, show, path, camera: CameraConfig):
 
     # Make it the active scene camera so Numpad 0 previews the shot.
     context.scene.camera = obj
+    return obj
+
+
+def build_path_visual(context, show, camera: CameraConfig, path):
+    """Draw the whole camera trajectory as a visible tube (start -> end).
+
+    A persistent ``DroneCamPath`` curve so the operator can verify, at a glance,
+    that the camera never flies into the show. Rebuilt on every plan.
+    """
+    import bpy
+
+    old = bpy.data.objects.get(PATH_OBJECT_NAME)
+    if old is not None:
+        data = old.data
+        bpy.data.objects.remove(old, do_unlink=True)
+        if isinstance(data, bpy.types.Curve) and data.users == 0:
+            bpy.data.curves.remove(data)
+
+    pts = [path.pose_at(kf.t, camera, show).position for kf in path.keyframes]
+    if len(pts) < 2:
+        return None
+
+    curve = bpy.data.curves.new(PATH_OBJECT_NAME, "CURVE")
+    curve.dimensions = "3D"
+    sp = curve.splines.new("POLY")
+    sp.points.add(len(pts) - 1)
+    for i, p in enumerate(pts):
+        sp.points[i].co = (p.x, p.y, p.z, 1.0)
+    curve.bevel_depth = 1.0  # ~1 m tube so it reads at venue scale
+
+    mat = bpy.data.materials.get("DroneCamPathMat")
+    if mat is None:
+        mat = bpy.data.materials.new("DroneCamPathMat")
+        mat.diffuse_color = (1.0, 0.35, 0.0, 1.0)  # orange
+    curve.materials.append(mat)
+
+    obj = bpy.data.objects.new(PATH_OBJECT_NAME, curve)
+    obj.show_in_front = True
+    context.scene.collection.objects.link(obj)
     return obj
 
 

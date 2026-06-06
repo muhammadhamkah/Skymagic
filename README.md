@@ -122,6 +122,19 @@ apart for the time available, the **speed warnings** tell you to either spread
 the move over more frames or move the points closer. With no scenes defined, the
 planner falls back to the single automatic *Auto shot* (orbit/static/flyby).
 
+### Seeing the path & staying clear of the show
+
+The camera drone must never fly into the show, so on every **Generate**:
+
+* a persistent **`DroneCamPath`** curve is drawn through the whole trajectory
+  (start → end) so you can see at a glance where the camera goes relative to the
+  formations, and
+* the simulation reports the **minimum clearance** — the closest the camera ever
+  gets to any show drone — and raises a `clearance` warning if it breaches the
+  **Safety clearance (m)** you set. Bump the safety radius to your operational
+  separation; if you see clearance warnings, move the offending scene's waypoints
+  further out from the formation.
+
 ## Importing a Blender show (headless / CLI)
 
 Prefer the CLI? Run [`tools/blender_export.py`](tools/blender_export.py) inside

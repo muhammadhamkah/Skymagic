@@ -49,6 +49,26 @@ class TestPlanner(unittest.TestCase):
         result = simulate(self.show, self.cam, path)
         self.assertNotIn("gimbal_range", result.violation_summary)
 
+    def test_clearance_clean_for_auto_orbit(self):
+        # the auto planner stands well off the show, so clearance is large
+        path = plan_auto_path(self.show, self.cam, AutoPlanOptions(mode="orbit"))
+        result = simulate(self.show, self.cam, path, safety_radius_m=5.0)
+        self.assertGreater(result.min_clearance_m, 5.0)
+        self.assertNotIn("clearance", result.violation_summary)
+
+    def test_clearance_warns_when_camera_in_show(self):
+        # a path that sits at the show centroid must breach clearance
+        from dronecam.planner import CameraPath, PathKeyframe
+        c0 = self.show.centroid_at(self.show.start_time)
+        c1 = self.show.centroid_at(self.show.end_time)
+        path = CameraPath([
+            PathKeyframe(t=self.show.start_time, position=c0, look_at_show=True),
+            PathKeyframe(t=self.show.end_time, position=c1, look_at_show=True),
+        ])
+        result = simulate(self.show, self.cam, path, safety_radius_m=5.0)
+        self.assertLess(result.min_clearance_m, 5.0)
+        self.assertIn("clearance", result.violation_summary)
+
     def test_min_altitude_floor(self):
         opt = AutoPlanOptions(mode="orbit", min_altitude_m=5.0)
         path = plan_auto_path(self.show, self.cam, opt)
