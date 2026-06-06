@@ -152,6 +152,33 @@ def _waypoint_positions(coll):
     return [Vec3(*o.matrix_world.translation) for o in objs]
 
 
+def _curve_positions(obj):
+    """World-space control points of a (drawn) curve, in stroke order."""
+    if obj is None or obj.type != "CURVE":
+        return []
+    mw = obj.matrix_world
+    pts = []
+    for sp in obj.data.splines:
+        if sp.type == "BEZIER":
+            for bp in sp.bezier_points:
+                w = mw @ bp.co
+                pts.append(Vec3(w.x, w.y, w.z))
+        else:
+            for p in sp.points:
+                w = mw @ p.co.to_3d()
+                pts.append(Vec3(w.x, w.y, w.z))
+    return pts
+
+
+def _segment_positions(seg):
+    """A scene's camera positions: the drawn curve if set, else its Empties."""
+    if seg.path_curve is not None:
+        pts = _curve_positions(seg.path_curve)
+        if pts:
+            return pts
+    return _waypoint_positions(seg.waypoints)
+
+
 def read_segments(context):
     """Build :class:`ShotSegment` list from the scene's segment properties.
 
@@ -163,7 +190,7 @@ def read_segments(context):
     fps = _fps(context)
     segs = []
     for s in p.segments:
-        positions = _waypoint_positions(s.waypoints)
+        positions = _segment_positions(s)
         if not positions:
             continue
         segs.append(ShotSegment(

@@ -81,6 +81,12 @@ class DCPSegment(PropertyGroup):
         type=bpy.types.Collection,
         description="Collection of waypoint Empties for this scene's camera move",
     )
+    path_curve: PointerProperty(
+        name="Drawn path",
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == "CURVE",
+        description="A drawn curve to fly along (overrides the waypoint Empties)",
+    )
     recording: BoolProperty(name="Recording", default=True)
 
 
@@ -187,8 +193,11 @@ class DCP_UL_segments(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_prop):
         row = layout.row(align=True)
         row.prop(item, "name", text="", emboss=False, icon="SEQUENCE")
-        n = len(item.waypoints.objects) if item.waypoints else 0
-        row.label(text=f"{item.start_frame}-{item.end_frame}  ({n} wp)")
+        if item.path_curve is not None:
+            kind = "drawn"
+        else:
+            kind = f"{len(item.waypoints.objects) if item.waypoints else 0} wp"
+        row.label(text=f"{item.start_frame}-{item.end_frame}  ({kind})")
 
 
 def _active_segment(context):
@@ -281,6 +290,45 @@ class DCP_OT_add_waypoint(Operator):
         empty["dcp_order"] = order
         coll.objects.link(empty)
         self.report({"INFO"}, f"Added waypoint {order + 1} to '{seg.name}'")
+        return {"FINISHED"}
+
+
+class DCP_OT_draw_path(Operator):
+    bl_idname = "dcp.draw_path"
+    bl_label = "Draw Path"
+    bl_description = ("Create a curve for this scene and enter the Draw tool so "
+                      "you can sketch the camera move in the viewport")
+
+    def execute(self, context):
+        import bpy
+
+        seg = _active_segment(context)
+        if seg is None:
+            self.report({"ERROR"}, "Add a scene first.")
+            return {"CANCELLED"}
+
+        cu = bpy.data.curves.new(f"Draw {seg.name}", "CURVE")
+        cu.dimensions = "3D"
+        obj = bpy.data.objects.new(f"DronePath_{seg.name}", cu)
+        coll = seg.waypoints or context.scene.collection
+        coll.objects.link(obj)
+        seg.path_curve = obj
+
+        # Select it and drop into Edit mode with the Draw tool ready.
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+            bpy.ops.object.select_all(action="DESELECT")
+            context.view_layer.objects.active = obj
+            obj.select_set(True)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.wm.tool_set_by_id(name="builtin.draw")
+            self.report({"INFO"},
+                        "Draw the path in the viewport (try Top view, Numpad 7). "
+                        "Tab back to Object mode when done.")
+        except RuntimeError:
+            self.report({"WARNING"},
+                        "Curve created. Select it, enter Edit mode and use the "
+                        "Draw tool to sketch the path.")
         return {"FINISHED"}
 
 
@@ -377,9 +425,21 @@ class DCP_PT_panel(Panel):
             r = sub.row(align=True)
             r.prop(seg, "end_frame")
             r.operator("dcp.segment_grab_end", text="", icon="TRIA_UP_BAR")
-            sub.prop_search(seg, "waypoints", bpy.data, "collections", text="Waypoints")
             sub.prop(seg, "recording")
-            sub.operator("dcp.add_waypoint", icon="EMPTY_AXIS")
+
+            # Path: either a drawn curve (preferred) or waypoint Empties.
+            sub.separator()
+            sub.label(text="Camera move:")
+            r = sub.row(align=True)
+            r.prop(seg, "path_curve", text="Drawn")
+            r.operator("dcp.draw_path", text="", icon="GREASEPENCIL")
+            if seg.path_curve is None:
+                sub.prop_search(seg, "waypoints", bpy.data, "collections",
+                                text="Waypoints")
+                sub.operator("dcp.add_waypoint", icon="EMPTY_AXIS")
+            else:
+                sub.label(text="Using drawn curve (clear it to use waypoints).",
+                          icon="INFO")
         else:
             box.label(text="Add a scene, then drop waypoint Empties.", icon="INFO")
         box.prop(p, "bake_hz")
@@ -427,6 +487,7 @@ _classes = (
     DCP_OT_segment_grab_start,
     DCP_OT_segment_grab_end,
     DCP_OT_add_waypoint,
+    DCP_OT_draw_path,
     DCP_OT_generate,
     DCP_OT_export,
     DCP_PT_panel,

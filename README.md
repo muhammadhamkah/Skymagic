@@ -105,10 +105,15 @@ Real shows are filmed scene by scene, repositioning during transitions. The
 
 1. **Add a scene** (the `+` button). Set its **Start/End** frames — scrub the
    timeline and use the ⤓/⤒ buttons to grab the playhead.
-2. **Drop waypoints**: position the 3D cursor where you want the drone (Shift +
-   Right-click in the viewport), then click **Add Waypoint at Cursor**. One
-   waypoint = a fixed vantage that tracks the show; several = a rough path that
-   gets **Catmull-Rom smoothed** into a glide through your points.
+2. **Define the camera move**, either way:
+   * **Draw it** — click **Draw Path** (pencil button). It creates a curve and
+     drops you into Blender's curve *Draw tool* so you can sketch the flight in
+     the viewport (draw the ground track from Top view, then raise it in Front
+     view). The drawn curve is sampled as the path.
+   * **Or drop waypoints** — position the 3D cursor (Shift + Right-click) and
+     click **Add Waypoint at Cursor**. One waypoint = a fixed vantage that
+     tracks the show; several = a rough path **Catmull-Rom smoothed** into a
+     glide through your points.
 3. Add more scenes the same way. The camera always aims at the drone cloud and
    picks its zoom to fill the frame.
 4. **Generate Camera Path** stitches them together: each scene plays its move,
