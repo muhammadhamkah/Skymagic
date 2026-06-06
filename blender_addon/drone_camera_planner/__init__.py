@@ -231,7 +231,7 @@ class DCP_PT_panel(Panel):
         box.prop(p, "fill")
         box.prop(p, "min_altitude")
 
-        layout.operator("dcp.generate", icon="CON_CAMERASOLVE")
+        layout.operator("dcp.generate", icon="OUTLINER_OB_CAMERA")
 
         if p.last_report:
             box = layout.box()
