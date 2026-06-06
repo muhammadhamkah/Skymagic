@@ -23,6 +23,11 @@ from dronecam.simulation import simulate
 
 CAMERA_OBJECT_NAME = "DroneCam"
 
+# Hard cap on how many frames we sample from the timeline. Each sample triggers
+# a full scene evaluation, so this bounds the (UI-blocking) planning cost
+# regardless of show length; ~150 samples is plenty for a smooth camera path.
+MAX_SHOW_SAMPLES = 150
+
 
 class PlannerError(Exception):
     """Raised for user-facing problems (no drones, no path, etc.)."""
@@ -75,14 +80,23 @@ def sample_show(context):
     f_start, f_end = _frame_range(context)
     if f_end <= f_start:
         raise PlannerError("Frame end must be greater than frame start.")
-    step = max(1, p.frame_step)
     fps = _fps(context)
     scene = context.scene
 
+    # Each sampled frame forces a full scene evaluation (heavy with hundreds of
+    # drones), so cap the total number of samples. Planning a smooth path only
+    # needs a coarse time resolution; raise the step if the user's step would
+    # produce more than MAX_SHOW_SAMPLES frames.
+    span = f_end - f_start
+    step = max(p.frame_step, 1, -(-span // MAX_SHOW_SAMPLES))  # ceil div
+    sample_frames = list(range(f_start, f_end + 1, step))
+
     frames = []
     original = scene.frame_current
+    wm = context.window_manager
+    wm.progress_begin(0, len(sample_frames))
     try:
-        for f in range(f_start, f_end + 1, step):
+        for i, f in enumerate(sample_frames):
             scene.frame_set(f)
             deps = context.evaluated_depsgraph_get()
             points = []
@@ -90,9 +104,15 @@ def sample_show(context):
                 loc = obj.evaluated_get(deps).matrix_world.translation
                 points.append(Vec3(loc.x, loc.y, loc.z))
             frames.append(ShowFrame(t=(f - f_start) / fps, points=points))
+            wm.progress_update(i)
+            if i % 20 == 0:
+                print(f"[DroneCam] sampling show {i + 1}/{len(sample_frames)}")
     finally:
+        wm.progress_end()
         scene.frame_set(original)
 
+    print(f"[DroneCam] sampled {len(frames)} frames x {len(objs)} drones "
+          f"(step {step})")
     name = bpy.path.display_name_from_filepath(bpy.data.filepath) or "Blender Show"
     return DroneShow(name=name, fps=fps, frames=frames,
                      drone_ids=[o.name for o in objs])
