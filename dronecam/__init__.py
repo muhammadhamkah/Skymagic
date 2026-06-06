@@ -14,6 +14,7 @@ from .geometry import Vec3, GeoOrigin
 from .show import DroneShow, ShowFrame
 from .camera import CameraConfig, CameraPose
 from .planner import CameraPath, PathKeyframe, plan_auto_path
+from .segments import ShotSegment, SegmentPlanOptions, plan_segments
 from .framing import FramingEngine, FrameMetrics
 from .simulation import simulate, SimulationResult
 from .export import export_mission
@@ -28,6 +29,9 @@ __all__ = [
     "CameraPath",
     "PathKeyframe",
     "plan_auto_path",
+    "ShotSegment",
+    "SegmentPlanOptions",
+    "plan_segments",
     "FramingEngine",
     "FrameMetrics",
     "simulate",

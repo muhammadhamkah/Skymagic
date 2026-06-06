@@ -57,15 +57,31 @@ _ensure_dronecam()
 import bpy  # noqa: E402
 from bpy.props import (  # noqa: E402
     BoolProperty,
+    CollectionProperty,
     EnumProperty,
     FloatProperty,
     IntProperty,
     StringProperty,
     PointerProperty,
 )
-from bpy.types import Operator, Panel, PropertyGroup  # noqa: E402
+from bpy.types import Operator, Panel, PropertyGroup, UIList  # noqa: E402
 
 from . import bridge  # noqa: E402
+
+
+# --------------------------------------------------------------------------
+# A single scene / shot
+# --------------------------------------------------------------------------
+class DCPSegment(PropertyGroup):
+    name: StringProperty(name="Name", default="Scene")
+    start_frame: IntProperty(name="Start", default=1)
+    end_frame: IntProperty(name="End", default=100)
+    waypoints: PointerProperty(
+        name="Waypoints",
+        type=bpy.types.Collection,
+        description="Collection of waypoint Empties for this scene's camera move",
+    )
+    recording: BoolProperty(name="Recording", default=True)
 
 
 # --------------------------------------------------------------------------
@@ -132,6 +148,18 @@ class DCPProperties(PropertyGroup):
     )
     export_dir: StringProperty(name="Export to", subtype="DIR_PATH", default="//mission")
 
+    # --- scenes / shots ---
+    segments: CollectionProperty(type=DCPSegment)
+    active_segment: IntProperty(default=0)
+    bake_hz: FloatProperty(
+        name="Smoothness (kf/s)", default=2.0, min=0.5, max=10.0,
+        description="Keyframes baked per second along the smoothed path",
+    )
+    record_transitions: BoolProperty(
+        name="Record during transitions", default=True,
+        description="Keep recording while repositioning between scenes",
+    )
+
     # --- last report (read-only display) ---
     last_report: StringProperty(name="Report", default="")
 
@@ -148,6 +176,107 @@ class DCP_OT_sync_range(Operator):
         p = context.scene.dcp
         p.frame_start = context.scene.frame_start
         p.frame_end = context.scene.frame_end
+        return {"FINISHED"}
+
+
+class DCP_UL_segments(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_prop):
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, icon="SEQUENCE")
+        n = len(item.waypoints.objects) if item.waypoints else 0
+        row.label(text=f"{item.start_frame}-{item.end_frame}  ({n} wp)")
+
+
+def _active_segment(context):
+    p = context.scene.dcp
+    if 0 <= p.active_segment < len(p.segments):
+        return p.segments[p.active_segment]
+    return None
+
+
+class DCP_OT_segment_add(Operator):
+    bl_idname = "dcp.segment_add"
+    bl_label = "Add Scene"
+    bl_description = "Add a scene/shot and a fresh collection to hold its waypoints"
+
+    def execute(self, context):
+        import bpy
+
+        p = context.scene.dcp
+        seg = p.segments.add()
+        idx = len(p.segments)
+        seg.name = f"Scene {idx}"
+        seg.start_frame = context.scene.frame_current
+        seg.end_frame = min(context.scene.frame_end, context.scene.frame_current + 100)
+        coll = bpy.data.collections.new(f"DroneCam WP {idx}")
+        context.scene.collection.children.link(coll)
+        seg.waypoints = coll
+        p.active_segment = idx - 1
+        return {"FINISHED"}
+
+
+class DCP_OT_segment_remove(Operator):
+    bl_idname = "dcp.segment_remove"
+    bl_label = "Remove Scene"
+    bl_description = "Remove the selected scene (its waypoint collection is left in place)"
+
+    def execute(self, context):
+        p = context.scene.dcp
+        if 0 <= p.active_segment < len(p.segments):
+            p.segments.remove(p.active_segment)
+            p.active_segment = max(0, p.active_segment - 1)
+        return {"FINISHED"}
+
+
+class DCP_OT_segment_grab_start(Operator):
+    bl_idname = "dcp.segment_grab_start"
+    bl_label = "Set start = playhead"
+
+    def execute(self, context):
+        seg = _active_segment(context)
+        if seg:
+            seg.start_frame = context.scene.frame_current
+        return {"FINISHED"}
+
+
+class DCP_OT_segment_grab_end(Operator):
+    bl_idname = "dcp.segment_grab_end"
+    bl_label = "Set end = playhead"
+
+    def execute(self, context):
+        seg = _active_segment(context)
+        if seg:
+            seg.end_frame = context.scene.frame_current
+        return {"FINISHED"}
+
+
+class DCP_OT_add_waypoint(Operator):
+    bl_idname = "dcp.add_waypoint"
+    bl_label = "Add Waypoint at Cursor"
+    bl_description = ("Drop a camera waypoint Empty at the 3D cursor for the "
+                      "selected scene (Shift+Right-click places the cursor)")
+
+    def execute(self, context):
+        import bpy
+
+        seg = _active_segment(context)
+        if seg is None:
+            self.report({"ERROR"}, "Add a scene first.")
+            return {"CANCELLED"}
+        coll = seg.waypoints
+        if coll is None:
+            coll = bpy.data.collections.new(f"DroneCam WP {context.scene.dcp.active_segment + 1}")
+            context.scene.collection.children.link(coll)
+            seg.waypoints = coll
+
+        order = len(coll.objects)
+        empty = bpy.data.objects.new(f"WP_{seg.name}_{order}", None)
+        empty.empty_display_type = "SPHERE"
+        empty.empty_display_size = 2.0
+        empty.location = context.scene.cursor.location
+        empty["dcp_order"] = order
+        coll.objects.link(empty)
+        self.report({"INFO"}, f"Added waypoint {order + 1} to '{seg.name}'")
         return {"FINISHED"}
 
 
@@ -220,16 +349,47 @@ class DCP_PT_panel(Panel):
         box.prop(p, "frame_step")
 
         box = layout.box()
-        box.label(text="Camera & shot", icon="CAMERA_DATA")
+        box.label(text="Camera", icon="CAMERA_DATA")
         box.prop(p, "preset")
-        box.prop(p, "plan_mode")
-        box.prop(p, "keyframes")
-        box.prop(p, "elevation")
-        box.prop(p, "azimuth")
-        if p.plan_mode == "orbit":
-            box.prop(p, "orbit_degrees")
         box.prop(p, "fill")
-        box.prop(p, "min_altitude")
+
+        box = layout.box()
+        box.label(text="Scenes / shots", icon="SEQUENCE")
+        row = box.row()
+        row.template_list("DCP_UL_segments", "", p, "segments",
+                          p, "active_segment", rows=3)
+        col = row.column(align=True)
+        col.operator("dcp.segment_add", text="", icon="ADD")
+        col.operator("dcp.segment_remove", text="", icon="REMOVE")
+
+        seg = _active_segment(context)
+        if seg is not None:
+            sub = box.column(align=True)
+            sub.prop(seg, "name")
+            r = sub.row(align=True)
+            r.prop(seg, "start_frame")
+            r.operator("dcp.segment_grab_start", text="", icon="TRIA_DOWN_BAR")
+            r = sub.row(align=True)
+            r.prop(seg, "end_frame")
+            r.operator("dcp.segment_grab_end", text="", icon="TRIA_UP_BAR")
+            sub.prop_search(seg, "waypoints", bpy.data, "collections", text="Waypoints")
+            sub.prop(seg, "recording")
+            sub.operator("dcp.add_waypoint", icon="EMPTY_AXIS")
+        else:
+            box.label(text="Add a scene, then drop waypoint Empties.", icon="INFO")
+        box.prop(p, "bake_hz")
+        box.prop(p, "record_transitions")
+
+        if len(p.segments) == 0:
+            box = layout.box()
+            box.label(text="Auto shot (used when no scenes)", icon="CON_FOLLOWPATH")
+            box.prop(p, "plan_mode")
+            box.prop(p, "keyframes")
+            box.prop(p, "elevation")
+            box.prop(p, "azimuth")
+            if p.plan_mode == "orbit":
+                box.prop(p, "orbit_degrees")
+            box.prop(p, "min_altitude")
 
         layout.operator("dcp.generate", icon="OUTLINER_OB_CAMERA")
 
@@ -253,8 +413,15 @@ class DCP_PT_panel(Panel):
 # Registration
 # --------------------------------------------------------------------------
 _classes = (
+    DCPSegment,        # must register before DCPProperties references it
     DCPProperties,
+    DCP_UL_segments,
     DCP_OT_sync_range,
+    DCP_OT_segment_add,
+    DCP_OT_segment_remove,
+    DCP_OT_segment_grab_start,
+    DCP_OT_segment_grab_end,
+    DCP_OT_add_waypoint,
     DCP_OT_generate,
     DCP_OT_export,
     DCP_PT_panel,

@@ -18,6 +18,7 @@ from dronecam.camera import CameraConfig, get_preset
 from dronecam.export import export_mission
 from dronecam.geometry import GeoOrigin, Vec3, forward_vector
 from dronecam.planner import AutoPlanOptions, plan_auto_path
+from dronecam.segments import SegmentPlanOptions, ShotSegment, plan_segments
 from dronecam.show import DroneShow, ShowFrame
 from dronecam.simulation import simulate
 
@@ -138,6 +139,56 @@ def make_options(context) -> AutoPlanOptions:
     )
 
 
+def _waypoint_positions(coll):
+    """World positions of the Empties in a waypoint collection, in order.
+
+    Ordered by the integer ``dcp_order`` custom property (set when added), then
+    by name as a fallback.
+    """
+    if coll is None:
+        return []
+    objs = sorted(coll.objects, key=lambda o: (o.get("dcp_order", 0), o.name))
+    return [Vec3(*o.matrix_world.translation) for o in objs]
+
+
+def read_segments(context):
+    """Build :class:`ShotSegment` list from the scene's segment properties.
+
+    Scene frames are converted to show-seconds using the same origin as the
+    sampled show, so segment times line up with the drone cloud.
+    """
+    p = context.scene.dcp
+    f_start, _ = _frame_range(context)
+    fps = _fps(context)
+    segs = []
+    for s in p.segments:
+        positions = _waypoint_positions(s.waypoints)
+        if not positions:
+            continue
+        segs.append(ShotSegment(
+            name=s.name,
+            t_start=(s.start_frame - f_start) / fps,
+            t_end=(s.end_frame - f_start) / fps,
+            waypoints=positions,
+            recording=s.recording,
+        ))
+    return segs
+
+
+def build_path(context, show, camera):
+    """Plan a camera path: scene-by-scene if segments exist, else auto-orbit."""
+    p = context.scene.dcp
+    segs = read_segments(context)
+    if segs:
+        opt = SegmentPlanOptions(
+            bake_hz=p.bake_hz,
+            fill=p.fill,
+            record_transitions=p.record_transitions,
+        )
+        return plan_segments(show, camera, segs, opt)
+    return plan_auto_path(show, camera, make_options(context))
+
+
 def plan_and_build(context):
     """Sample, plan, build the animated camera, and run a coverage simulation.
 
@@ -145,9 +196,11 @@ def plan_and_build(context):
     """
     show = sample_show(context)
     camera = make_camera_config(context)
-    path = plan_auto_path(show, camera, make_options(context))
+    path = build_path(context, show, camera)
     if not path.keyframes:
-        raise PlannerError("Planner produced an empty path (is the show empty?).")
+        raise PlannerError(
+            "Empty path. Add scenes with waypoint Empties, or check the show."
+        )
     build_camera_object(context, show, path, camera)
     result = simulate(show, camera, path)
     return show, path, camera, result
@@ -198,11 +251,12 @@ def build_camera_object(context, show, path, camera: CameraConfig):
 
     f_start, _ = _frame_range(context)
     fps = _fps(context)
-    t0 = path.start_time
 
     for kf in path.keyframes:
         pose = path.pose_at(kf.t, camera, show)
-        frame = f_start + round((kf.t - t0) * fps)
+        # kf.t is seconds from the sampled show's origin (f_start), so each
+        # keyframe lands on its real scene frame.
+        frame = f_start + round(kf.t * fps)
 
         obj.location = (pose.position.x, pose.position.y, pose.position.z)
         fwd = forward_vector(pose.yaw, pose.pitch)
@@ -231,7 +285,7 @@ def export(context):
     p = context.scene.dcp
     show = sample_show(context)
     camera = make_camera_config(context)
-    path = plan_auto_path(show, camera, make_options(context))
+    path = build_path(context, show, camera)
     if not path.keyframes:
         raise PlannerError("Nothing to export — the planned path is empty.")
 

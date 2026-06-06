@@ -98,6 +98,30 @@ In Blender: *Edit > Preferences > Add-ons > Install...*, pick the zip, enable
 5. **Venue origin** — enter the venue latitude/longitude (and the compass
    heading of the scene's +Y axis), then **Export Mission**.
 
+### Scene-by-scene planning (drawing shots)
+
+Real shows are filmed scene by scene, repositioning during transitions. The
+**Scenes / shots** section lets you do exactly that:
+
+1. **Add a scene** (the `+` button). Set its **Start/End** frames — scrub the
+   timeline and use the ⤓/⤒ buttons to grab the playhead.
+2. **Drop waypoints**: position the 3D cursor where you want the drone (Shift +
+   Right-click in the viewport), then click **Add Waypoint at Cursor**. One
+   waypoint = a fixed vantage that tracks the show; several = a rough path that
+   gets **Catmull-Rom smoothed** into a glide through your points.
+3. Add more scenes the same way. The camera always aims at the drone cloud and
+   picks its zoom to fill the frame.
+4. **Generate Camera Path** stitches them together: each scene plays its move,
+   and the **gaps between scenes become automatic eased repositioning moves** so
+   the drone is in place when the next scene starts. *Smoothness (kf/s)* controls
+   how finely the path is baked; *Record during transitions* toggles whether the
+   camera keeps rolling while it repositions.
+
+The coverage report still validates everything — if you space waypoints too far
+apart for the time available, the **speed warnings** tell you to either spread
+the move over more frames or move the points closer. With no scenes defined, the
+planner falls back to the single automatic *Auto shot* (orbit/static/flyby).
+
 ## Importing a Blender show (headless / CLI)
 
 Prefer the CLI? Run [`tools/blender_export.py`](tools/blender_export.py) inside
