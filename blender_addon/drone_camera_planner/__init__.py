@@ -175,6 +175,14 @@ class DCPProperties(PropertyGroup):
                     "and hold, so the drone is settled before the scene starts",
     )
 
+    # --- manual / live recording ---
+    use_recorded: BoolProperty(
+        name="Use my DroneCam animation", default=False,
+        description="Generate/Export use the DroneCam's own keyframes (flown or "
+                    "hand-animated) instead of the planner",
+    )
+    live_recording: BoolProperty(default=False)
+
     # --- last report (read-only display) ---
     last_report: StringProperty(name="Report", default="")
 
@@ -337,6 +345,53 @@ class DCP_OT_draw_path(Operator):
         return {"FINISHED"}
 
 
+class DCP_OT_live_record(Operator):
+    bl_idname = "dcp.live_record"
+    bl_label = "Live Record"
+    bl_description = ("Toggle live recording: locks the DroneCam to your viewport "
+                      "view and turns on auto-keyframing so flying the view records "
+                      "the camera. Click again to stop.")
+
+    def execute(self, context):
+        import bpy
+
+        p = context.scene.dcp
+        cam = bridge.ensure_camera(context)
+        context.scene.camera = cam
+
+        # find a 3D viewport to lock the camera to
+        space = None
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                space = area.spaces.active
+                break
+
+        turning_on = not p.live_recording
+        p.live_recording = turning_on
+        ts = context.scene.tool_settings
+
+        if turning_on:
+            ts.use_keyframe_insert_auto = True
+            p.use_recorded = True
+            if space is not None:
+                space.lock_camera = True
+                try:
+                    space.region_3d.view_perspective = "CAMERA"
+                except Exception:
+                    pass
+            self.report(
+                {"INFO"},
+                "REC on: press Play, then fly (Shift+` for fly mode) or orbit/pan "
+                "to move the cam — it keyframes as you go. Click again to stop.",
+            )
+        else:
+            ts.use_keyframe_insert_auto = False
+            if space is not None:
+                space.lock_camera = False
+            self.report({"INFO"}, "REC off. Click Generate to check coverage, then Export.")
+        return {"FINISHED"}
+
+
 class DCP_OT_generate(Operator):
     bl_idname = "dcp.generate"
     bl_label = "Generate Camera Path"
@@ -462,6 +517,17 @@ class DCP_PT_panel(Panel):
                 box.prop(p, "orbit_degrees")
             box.prop(p, "min_altitude")
 
+        box = layout.box()
+        box.label(text="Manual / live record", icon="REC")
+        box.operator(
+            "dcp.live_record",
+            text="Stop Recording" if p.live_recording else "Live Record (fly the cam)",
+            icon="REC", depress=p.live_recording,
+        )
+        box.prop(p, "use_recorded")
+        if p.use_recorded:
+            box.label(text="Generate/Export use the DroneCam's animation.", icon="INFO")
+
         layout.operator("dcp.generate", icon="OUTLINER_OB_CAMERA")
 
         if p.last_report:
@@ -494,6 +560,7 @@ _classes = (
     DCP_OT_segment_grab_end,
     DCP_OT_add_waypoint,
     DCP_OT_draw_path,
+    DCP_OT_live_record,
     DCP_OT_generate,
     DCP_OT_export,
     DCP_PT_panel,

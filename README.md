@@ -132,6 +132,25 @@ apart for the time available, the **speed warnings** tell you to either spread
 the move over more frames or move the points closer. With no scenes defined, the
 planner falls back to the single automatic *Auto shot* (orbit/static/flyby).
 
+### Manual / live recording (fly the camera yourself)
+
+Prefer to pilot the camera by hand while watching the show? The **Manual / live
+record** section lets you fly it in the viewport and record the move:
+
+1. Click **Live Record (fly the cam)**. It creates/locks the `DroneCam` to your
+   viewport view, switches to camera view, and turns on auto-keyframing.
+2. Press **Play**, then **fly** — use Fly mode (`Shift + \``) like a game, or
+   orbit/pan/zoom. As you move, the camera is keyframed, so you keep the show in
+   frame exactly how you want.
+3. Click **Stop Recording** when done.
+4. With **Use my DroneCam animation** ticked, **Generate** runs the coverage and
+   clearance checks on what you flew (and draws the path line), and **Export
+   Mission** turns your flown camera into the waypoint mission.
+
+The same path applies to a hand-keyframed camera: animate `DroneCam` however you
+like in Blender, tick *Use my DroneCam animation*, and export it with full
+speed/clearance validation.
+
 ### Seeing the path & staying clear of the show
 
 The camera drone must never fly into the show, so on every **Generate**:

@@ -17,10 +17,12 @@ can be imported (and partially unit-tested) outside Blender. Everything in
 from dronecam.camera import CameraConfig, get_preset
 from dronecam.export import export_mission
 from dronecam.geometry import GeoOrigin, Vec3, forward_vector
-from dronecam.planner import AutoPlanOptions, plan_auto_path
+from dronecam.planner import AutoPlanOptions, CameraPath, PathKeyframe, plan_auto_path
 from dronecam.segments import SegmentPlanOptions, ShotSegment, plan_segments
 from dronecam.show import DroneShow, ShowFrame
 from dronecam.simulation import simulate
+
+import math
 
 CAMERA_OBJECT_NAME = "DroneCam"
 PATH_OBJECT_NAME = "DroneCamPath"
@@ -218,22 +220,97 @@ def build_path(context, show, camera):
     return plan_auto_path(show, camera, make_options(context))
 
 
+def ensure_camera(context):
+    """Return the DroneCam object, creating it (with the preset optics) if absent.
+
+    Unlike the planner's builder, this never clears existing animation — it is
+    used to set up live recording / hand-keying onto the camera.
+    """
+    import bpy
+
+    obj = context.scene.objects.get(CAMERA_OBJECT_NAME)
+    if obj is not None and obj.type == "CAMERA":
+        return obj
+    camera = make_camera_config(context)
+    cam_data = bpy.data.cameras.new(CAMERA_OBJECT_NAME)
+    cam_data.sensor_fit = "HORIZONTAL"
+    cam_data.sensor_width = camera.sensor_width_mm
+    cam_data.lens = camera.focal_mm
+    obj = bpy.data.objects.new(CAMERA_OBJECT_NAME, cam_data)
+    context.scene.collection.objects.link(obj)
+    return obj
+
+
+def sample_camera_animation(context, max_keys=150):
+    """Read the DroneCam's own animation into a :class:`CameraPath`.
+
+    Lets a hand-keyframed or live-flown camera be validated and exported exactly
+    like a planned one. The Blender camera's forward axis is local ``-Z``; we
+    recover yaw/pitch from its world orientation.
+    """
+    from mathutils import Vector
+
+    obj = context.scene.objects.get(CAMERA_OBJECT_NAME)
+    if obj is None or obj.type != "CAMERA":
+        raise PlannerError("No DroneCam found. Record or generate one first.")
+    if obj.animation_data is None or obj.animation_data.action is None:
+        raise PlannerError("DroneCam has no animation to read.")
+
+    f_start, f_end = _frame_range(context)
+    fps = _fps(context)
+    span = f_end - f_start
+    if span <= 0:
+        raise PlannerError("Frame end must be greater than frame start.")
+    step = max(1, -(-span // max_keys))
+    scene = context.scene
+    original = scene.frame_current
+
+    kfs = []
+    try:
+        for f in range(f_start, f_end + 1, step):
+            scene.frame_set(f)
+            mw = obj.matrix_world
+            loc = mw.translation
+            fwd = mw.to_3x3() @ Vector((0.0, 0.0, -1.0))
+            yaw = math.atan2(fwd.y, fwd.x)
+            pitch = math.atan2(fwd.z, math.hypot(fwd.x, fwd.y))
+            kfs.append(PathKeyframe(
+                t=(f - f_start) / fps,
+                position=Vec3(loc.x, loc.y, loc.z),
+                yaw=yaw, pitch=pitch,
+                focal_mm=float(obj.data.lens),
+                recording=True, look_at_show=False,
+            ))
+    finally:
+        scene.frame_set(original)
+    return CameraPath(keyframes=kfs, name="Recorded")
+
+
 def plan_and_build(context):
     """Sample, plan, build the animated camera, and run a coverage simulation.
 
-    Returns ``(show, path, camera, sim_result)``.
+    Returns ``(show, path, camera, sim_result)``. In *recorded* mode the
+    DroneCam's existing animation is used as the path (the camera is not
+    rebuilt); otherwise the path is planned and a fresh DroneCam is keyed.
     """
+    p = context.scene.dcp
     show = sample_show(context)
     camera = make_camera_config(context)
-    path = build_path(context, show, camera)
-    if not path.keyframes:
-        raise PlannerError(
-            "Empty path. Add scenes with waypoint Empties, or check the show."
-        )
-    build_camera_object(context, show, path, camera)
+
+    if p.use_recorded:
+        path = sample_camera_animation(context)
+        if not path.keyframes:
+            raise PlannerError("DroneCam animation is empty.")
+    else:
+        path = build_path(context, show, camera)
+        if not path.keyframes:
+            raise PlannerError(
+                "Empty path. Add scenes with waypoints, draw a path, or record one."
+            )
+        build_camera_object(context, show, path, camera)
+
     build_path_visual(context, show, camera, path)
-    result = simulate(show, camera, path,
-                      safety_radius_m=context.scene.dcp.safety_radius)
+    result = simulate(show, camera, path, safety_radius_m=p.safety_radius)
     return show, path, camera, result
 
 
@@ -355,7 +432,7 @@ def export(context):
     p = context.scene.dcp
     show = sample_show(context)
     camera = make_camera_config(context)
-    path = build_path(context, show, camera)
+    path = sample_camera_animation(context) if p.use_recorded else build_path(context, show, camera)
     if not path.keyframes:
         raise PlannerError("Nothing to export — the planned path is empty.")
 
