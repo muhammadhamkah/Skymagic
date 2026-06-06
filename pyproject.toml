@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dronecam"
+version = "0.1.0"
+description = "Autonomous Drone Show Capture Planner — turn a drone show into an autonomous camera-drone filming mission"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["drone", "drone-show", "cinematography", "flight-planning", "blender"]
+# Pure standard library: no runtime dependencies.
+dependencies = []
+
+[project.scripts]
+dronecam = "dronecam.cli:main"
+
+[tool.setuptools]
+packages = ["dronecam"]
