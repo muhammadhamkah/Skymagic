@@ -119,8 +119,13 @@ Real shows are filmed scene by scene, repositioning during transitions. The
 4. **Generate Camera Path** stitches them together: each scene plays its move,
    and the **gaps between scenes become automatic eased repositioning moves** so
    the drone is in place when the next scene starts. *Smoothness (kf/s)* controls
-   how finely the path is baked; *Record during transitions* toggles whether the
-   camera keeps rolling while it repositions.
+   how finely the path is baked; *Standby (s)* makes the drone arrive at the next
+   vantage early and hold so it is settled before the scene begins; *Record
+   during transitions* toggles whether the camera keeps rolling while it moves.
+
+Generating is non-destructive — it only builds the preview `DroneCam` and path
+line, so iterate freely (Numpad 0 to look through it, play the timeline to
+preview the move). Nothing leaves Blender until **Export Mission**.
 
 The coverage report still validates everything — if you space waypoints too far
 apart for the time available, the **speed warnings** tell you to either spread

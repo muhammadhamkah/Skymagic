@@ -169,6 +169,11 @@ class DCPProperties(PropertyGroup):
         name="Record during transitions", default=True,
         description="Keep recording while repositioning between scenes",
     )
+    standby_s: FloatProperty(
+        name="Standby (s)", default=0.0, min=0.0,
+        description="Arrive at the next scene's vantage this many seconds early "
+                    "and hold, so the drone is settled before the scene starts",
+    )
 
     # --- last report (read-only display) ---
     last_report: StringProperty(name="Report", default="")
@@ -443,6 +448,7 @@ class DCP_PT_panel(Panel):
         else:
             box.label(text="Add a scene, then drop waypoint Empties.", icon="INFO")
         box.prop(p, "bake_hz")
+        box.prop(p, "standby_s")
         box.prop(p, "record_transitions")
 
         if len(p.segments) == 0:

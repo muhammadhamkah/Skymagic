@@ -49,6 +49,7 @@ class SegmentPlanOptions:
     bake_hz: float = 2.0            # keyframes baked per second
     fill: float = 0.72             # target frame fill for zoom
     record_transitions: bool = True  # keep rolling while repositioning
+    standby_s: float = 0.0         # arrive this many seconds early and hold
 
 
 def _bake_times(t0: float, t1: float, hz: float) -> List[float]:
@@ -108,19 +109,26 @@ def plan_segments(
             pos = catmull_rom_at(seg.waypoints, u)
             add(ti, pos, seg.recording)
 
-        # --- transition to the next scene (eased reposition) ---
+        # --- transition to the next scene (eased reposition + standby) ---
         if idx + 1 < len(segs):
             nxt = segs[idx + 1]
             gap0, gap1 = seg.t_end, nxt.t_start
             if gap1 > gap0:
                 start_pos = catmull_rom_at(seg.waypoints, 1.0)
                 end_pos = catmull_rom_at(nxt.waypoints, 0.0)
-                # interior points only; the scene endpoints already exist
-                trans_times = _bake_times(gap0, gap1, opt.bake_hz)[1:-1]
-                for ti in trans_times:
-                    s = smoothstep((ti - gap0) / (gap1 - gap0))
+                # Reposition during [gap0, move_end], then hold (standby) at the
+                # next vantage until gap1 so the drone is settled and ready.
+                move_end = gap1 - max(0.0, opt.standby_s)
+                if move_end <= gap0:
+                    move_end = gap0 + (gap1 - gap0) * 0.5
+                move_span = move_end - gap0
+                for ti in _bake_times(gap0, move_end, opt.bake_hz)[1:]:
+                    s = smoothstep((ti - gap0) / move_span) if move_span > 0 else 1.0
                     pos = lerp_vec(start_pos, end_pos, s)
                     add(ti, pos, opt.record_transitions)
+                # standby hold keyframes (camera waits in place, still tracking)
+                for ti in _bake_times(move_end, gap1, opt.bake_hz)[1:-1]:
+                    add(ti, end_pos, opt.record_transitions)
 
     # Deduplicate identical timestamps that can appear where a scene end meets a
     # transition start, keeping the first.

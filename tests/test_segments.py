@@ -73,6 +73,19 @@ class TestPlanSegments(unittest.TestCase):
         self.assertEqual(ts, sorted(ts))
         self.assertEqual(len(ts), len(set(round(t, 6) for t in ts)))
 
+    def test_standby_holds_before_next_scene(self):
+        # with a long standby, the camera should reach scene 2's vantage early
+        # and hold there for the rest of the gap.
+        s1 = ShotSegment("s1", 0.0, 3.0, [self._vantage(1.5)])
+        end_pos = self._vantage(6.5) + Vec3(60, 0, 0)
+        s2 = ShotSegment("s2", 5.0, 8.0, [end_pos])
+        opt = SegmentPlanOptions(standby_s=1.5)  # move done by t=3.5, hold to 5.0
+        path = plan_segments(self.show, self.cam, [s1, s2], opt)
+        # by t=4.5 (well inside the standby window) the camera is at end_pos
+        pose = path.pose_at(4.5, self.cam, self.show)
+        self.assertAlmostEqual(pose.position.x, end_pos.x, places=1)
+        self.assertAlmostEqual(pose.position.y, end_pos.y, places=1)
+
     def test_transition_recording_toggle(self):
         s1 = ShotSegment("s1", 0.0, 3.0, [self._vantage(1.5)])
         s2 = ShotSegment("s2", 5.0, 8.0, [self._vantage(6.5)])

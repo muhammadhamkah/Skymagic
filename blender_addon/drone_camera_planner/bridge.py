@@ -212,6 +212,7 @@ def build_path(context, show, camera):
             bake_hz=p.bake_hz,
             fill=p.fill,
             record_transitions=p.record_transitions,
+            standby_s=p.standby_s,
         )
         return plan_segments(show, camera, segs, opt)
     return plan_auto_path(show, camera, make_options(context))
