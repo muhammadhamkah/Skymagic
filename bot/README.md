@@ -46,6 +46,36 @@ python -m bot.run_backtest --source binance \
 > a locked-down egress policy) `api.binance.com` may be blocked — the synthetic
 > mode is designed to run anywhere and exercises the same engine.
 
+### Real data without network access (CSV import)
+
+When the live API is blocked, export the klines anywhere and feed the files in.
+This runs the **identical** engine, lag detector, and latency sweep on real
+prices — the only way to settle whether a real pair has a fat or thin gross edge.
+
+```bash
+# Two per-symbol files (Binance raw kline CSVs work as-is):
+python -m bot.run_backtest --source csv \
+    --leader-csv data/BTCUSDT-1m.csv --laggard-csv data/SOLUSDT-1m.csv \
+    --bar-seconds 60 --lookback 1 --hold 8
+
+# Or one combined file with `timestamp,leader,laggard` columns:
+python -m bot.run_backtest --source csv --pair-csv data/pair.csv --bar-seconds 60
+```
+
+**Set `--bar-seconds` to your data's interval** (1 for 1s klines, 60 for 1m,
+300 for 5m) so the latency injection is calibrated to real wall-clock time.
+
+Where to get free historical klines without an API key:
+- **https://data.binance.vision** — official public dumps, one CSV (or zip) per
+  symbol/interval/day or month. Headerless Binance kline format, auto-detected.
+- Any TradingView / exchange export with a `close` column and a time column.
+
+Supported CSV layouts (auto-detected by `bot/feeds/csv_feed.py`):
+1. Binance raw klines (headerless, 11-12 cols; close = col 4, time = col 6).
+2. Headered OHLCV with a `close` column + a time column
+   (`close_time`/`open_time`/`timestamp`/`time`/`date`).
+3. Two-column `time,price`.
+
 ## Reading the output
 
 ```
@@ -78,7 +108,10 @@ bot/
   config.py            # CostModel, ExecutionModel, SignalConfig, BacktestConfig
   feeds/
     synthetic.py       # known-lag generator (the harness's test instrument)
-    binance.py         # public klines + CSV cache
+    binance.py         # public klines + CSV cache (live API)
+    csv_feed.py        # import real data from CSV when the API is blocked
+  hunt.py              # sweep regime x cost x threshold x latency for an edge
+  stress_maker.py      # does the maker edge survive adverse selection?
   signals/
     lead_lag.py        # detect_lag (diagnostic) + lead_lag_signal (causal)
   backtest/

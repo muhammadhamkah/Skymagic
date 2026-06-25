@@ -23,7 +23,7 @@ import argparse
 import pandas as pd
 
 from .config import BacktestConfig, SignalConfig
-from .feeds import make_lead_lag_series, load_pair
+from .feeds import make_lead_lag_series, load_pair, load_pair_csv, load_combined_csv
 from .signals.lead_lag import detect_lag
 from .backtest.engine import backtest, latency_sweep
 from .backtest.metrics import summarize, format_summary
@@ -34,11 +34,15 @@ pd.set_option("display.max_columns", 20)
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Lead-lag backtest harness")
-    p.add_argument("--source", choices=["synthetic", "binance"], default="synthetic")
+    p.add_argument("--source", choices=["synthetic", "binance", "csv"], default="synthetic")
     p.add_argument("--leader", default="BTCUSDT")
     p.add_argument("--laggard", default="ETHUSDT")
     p.add_argument("--interval", default="1s")
     p.add_argument("--limit", type=int, default=5000)
+    # CSV source: either two per-symbol files, or one combined leader/laggard file.
+    p.add_argument("--leader-csv", help="path to leader CSV (with --laggard-csv)")
+    p.add_argument("--laggard-csv", help="path to laggard CSV (with --leader-csv)")
+    p.add_argument("--pair-csv", help="path to a single CSV with leader & laggard columns")
     p.add_argument("--true-lag", type=int, default=5, help="synthetic ground-truth lag (bars)")
     p.add_argument("--lookback", type=int, default=3, help="leader-return lookback (bars)")
     p.add_argument("--hold", type=int, default=5, help="holding horizon (bars)")
@@ -51,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
 def load_data(args) -> pd.DataFrame:
     if args.source == "synthetic":
         return make_lead_lag_series(n=max(args.limit, 20_000), lag_bars=args.true_lag)
+    if args.source == "csv":
+        if args.pair_csv:
+            return load_combined_csv(args.pair_csv)
+        if args.leader_csv and args.laggard_csv:
+            return load_pair_csv(args.leader_csv, args.laggard_csv)
+        raise SystemExit(
+            "csv source needs --pair-csv, or both --leader-csv and --laggard-csv")
     return load_pair(args.leader, args.laggard, interval=args.interval, limit=args.limit)
 
 
