@@ -129,7 +129,12 @@ def backtest_side(
         e = min(entry_delay, T - 2)
         x = min(e + hold, T - 1)
         p_e, p_x = ev["price"].iloc[e], ev["price"].iloc[x]
-        gross = (p_x / p_e - 1.0) if side == "long" else (p_e / p_x - 1.0)
+        # Return on capital. Long = p_x/p_e - 1 (unbounded above, correct).
+        # Short P&L = (p_e - p_x)/p_e = 1 - p_x/p_e, BOUNDED at +100% — a short
+        # can't gain more than the whole position (price floors at zero). The
+        # naive p_e/p_x - 1 explodes on near-zero exits and fabricates absurd
+        # returns on coins that collapsed; that is a formula artifact, not money.
+        gross = (p_x / p_e - 1.0) if side == "long" else (1.0 - p_x / p_e)
         cost = ev["half_spread"].iloc[e] + ev["half_spread"].iloc[x] + 2 * fee + 2 * slippage
         rets.append(gross - cost)
     r = np.array(rets)

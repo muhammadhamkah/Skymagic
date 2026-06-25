@@ -37,6 +37,19 @@ def test_long_side_is_fat_tailed():
     assert s["mean_%"] > s["median_%"]
 
 
+def test_short_return_is_bounded_at_100pct():
+    # A coin that collapses ~99% from its first print must NOT produce a
+    # thousands-of-percent short return (the bug that faked a +24000% mean).
+    crash = pd.DataFrame({
+        "price": np.concatenate([[1.0], np.full(59, 0.01)]),   # 1.00 -> 0.01
+        "half_spread": np.full(60, 0.0005),
+    })
+    s = backtest_side([crash], "short", entry_delay=0, hold=30,
+                      fee=0.0, slippage=0.0)
+    assert s["mean_%"] <= 100.0, f"short return must cap at 100%, got {s['mean_%']}"
+    assert s["mean_%"] > 90.0  # near-total collapse ~ near +100%
+
+
 def test_real_csv_roundtrips_into_backtest(tmp_path):
     # Write a tiny OHLC CSV like fetch_listings would, and confirm it loads and
     # runs through the same backtest path.
