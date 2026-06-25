@@ -33,6 +33,12 @@ class CostModel:
     # For maker mode: fraction of the half-spread you actually capture per leg
     # after adverse selection. Conservative default — you rarely earn it all.
     spread_capture: float = 0.0
+    # For maker mode: adverse-selection penalty per leg, as a fraction of price.
+    # Passive fills happen disproportionately when the market is moving against
+    # you (informed flow hits your resting order), so your fill is worse than
+    # mid. This is the slow trader's curse — and the usual cause of death for a
+    # maker edge that looked great on paper. 0 = no adverse selection (naive).
+    adverse_selection: float = 0.0
 
     def effective_taker(self) -> float:
         return self.taker_fee * (1.0 - self.bnb_discount)
@@ -56,6 +62,7 @@ class CostModel:
                 2 * self.effective_maker()
                 - 2 * self.half_spread * self.spread_capture
                 + 2 * self.slippage
+                + 2 * self.adverse_selection
             )
         return 2 * self.effective_taker() + 2 * self.half_spread + 2 * self.slippage
 
