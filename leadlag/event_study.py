@@ -53,6 +53,9 @@ def main() -> int:
                     help="only trade when |leader move| over the window >= this")
     ap.add_argument("--latency-steps", type=int, default=1,
                     help="grid steps between observing the signal and getting filled")
+    ap.add_argument("--latency-sweep", type=int, default=0,
+                    help="if >0, sweep latency from 0..N steps and report the breakeven "
+                         "latency (max latency at which mean net P&L stays positive)")
     ap.add_argument("--hold-steps", type=int, default=2,
                     help="grid steps held before exit (~ the measured lag)")
     ap.add_argument("--taker-bps", type=float, default=0.0, help="taker fee per side (use 0 for 0-fee)")
@@ -75,32 +78,65 @@ def main() -> int:
     n = len(j)
 
     sig = args.signal_steps
-    lat = args.latency_steps
     hold = args.hold_steps
     per_side = args.taker_bps + args.slippage_bps
 
-    events = []
-    last_exit = -1
-    for t in range(sig, n - lat - hold):
-        if t <= last_exit:  # no overlapping positions
-            continue
-        leader_move_bps = (np.log(mid_L[t]) - np.log(mid_L[t - sig])) * 1e4
-        if abs(leader_move_bps) < args.threshold_bps:
-            continue
-        direction = 1 if leader_move_bps > 0 else -1
-        entry = t + lat
-        exit_ = entry + hold
-        if direction == 1:
-            entry_px, exit_px = ask_g[entry], bid_g[exit_]          # buy ask, sell bid
-        else:
-            entry_px, exit_px = bid_g[entry], ask_g[exit_]          # sell bid, buy ask
-        gross_bps = direction * (exit_px - entry_px) / entry_px * 1e4
-        net_bps = gross_bps - 2 * per_side                         # fee+slip both sides
-        # reference: how much the laggard mid actually moved (the 'available' edge)
-        avail_bps = direction * (np.log(mid_g[exit_]) - np.log(mid_g[entry])) * 1e4
-        spread_at_entry_bps = (ask_g[entry] - bid_g[entry]) / mid_g[entry] * 1e4
-        events.append((leader_move_bps, avail_bps, gross_bps, net_bps, spread_at_entry_bps))
-        last_exit = exit_
+    def run(lat: int):
+        """Simulate the strategy at a given latency (in grid steps). Returns events array."""
+        ev = []
+        last_exit = -1
+        for t in range(sig, n - lat - hold):
+            if t <= last_exit:  # no overlapping positions
+                continue
+            leader_move_bps = (np.log(mid_L[t]) - np.log(mid_L[t - sig])) * 1e4
+            if abs(leader_move_bps) < args.threshold_bps:
+                continue
+            direction = 1 if leader_move_bps > 0 else -1
+            entry = t + lat
+            exit_ = entry + hold
+            if direction == 1:
+                entry_px, exit_px = ask_g[entry], bid_g[exit_]      # buy ask, sell bid
+            else:
+                entry_px, exit_px = bid_g[entry], ask_g[exit_]      # sell bid, buy ask
+            gross_bps = direction * (exit_px - entry_px) / entry_px * 1e4
+            net_bps = gross_bps - 2 * per_side                     # fee+slip both sides
+            avail_bps = direction * (np.log(mid_g[exit_]) - np.log(mid_g[entry])) * 1e4
+            spr = (ask_g[entry] - bid_g[entry]) / mid_g[entry] * 1e4
+            ev.append((leader_move_bps, avail_bps, gross_bps, net_bps, spr))
+            last_exit = exit_
+        return np.array(ev) if ev else np.empty((0, 5))
+
+    # --- latency sweep: find the breakeven latency ------------------------
+    if args.latency_sweep > 0:
+        print("\n=== BREAKEVEN-LATENCY SWEEP ===")
+        print(f"leader={args.leader} laggard={args.laggard} grid={args.grid_ms}ms "
+              f"threshold={args.threshold_bps}bps hold={hold*args.grid_ms}ms")
+        print(f"\n  {'latency':>12} {'events':>7} {'net/trade':>11} {'hit%':>6}")
+        breakeven_ms = None
+        for L in range(0, args.latency_sweep + 1):
+            a = run(L)
+            if len(a) == 0:
+                continue
+            net = a[:, 3]
+            mark = ""
+            if net.mean() > 0:
+                breakeven_ms = L * args.grid_ms
+            else:
+                mark = "  <-- turns negative here"
+            print(f"  {L*args.grid_ms:>10}ms {len(a):>7} {net.mean():>+9.2f}bps "
+                  f"{(net>0).mean()*100:>5.1f}{mark}")
+        print(f"\n  BREAKEVEN LATENCY: "
+              + (f"~{breakeven_ms}ms — you must act faster than this for positive net."
+                 if breakeven_ms is not None else
+                 "negative even at 0ms latency — no edge regardless of speed."))
+        print(f"\n  NOTE: grid is {args.grid_ms}ms, so this sweep cannot resolve "
+              "single-digit-ms\n  breakeven. For that you need ms-resolution data "
+              "(websocket collector),\n  not REST polling.")
+        return 0
+
+    lat = args.latency_steps
+    events_arr = run(lat)
+    events = [tuple(r) for r in events_arr]
 
     print("\n=== CONDITIONAL EVENT STUDY ===")
     print(f"leader={args.leader} laggard={args.laggard} grid={args.grid_ms}ms")
