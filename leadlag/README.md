@@ -27,8 +27,11 @@ What still has to be true for a real edge, beyond zero fees:
 | file | purpose |
 |---|---|
 | `mexc.py` | thin public-API client (no key needed): book ticker |
-| `collect.py` | poll bookTicker at a fixed cadence → SQLite of timestamped ticks |
+| `collect.py` | poll REST bookTicker at a fixed cadence → SQLite of timestamped ticks |
+| `ws_collect.py` | **websocket** collector for ms-resolution ticks (protobuf) |
+| `pbdecode.py` | dependency-free protobuf wire decoder used by `ws_collect.py` |
 | `analyze.py` | cross-correlation lead-lag + conservative cost reality check |
+| `event_study.py` | conditional "trade only when it clears the spread" + breakeven-latency sweep |
 
 ## Install
 
@@ -44,6 +47,21 @@ pip install -r requirements.txt
 python collect.py --symbols BTCUSDT ETHUSDT SOLUSDT \
     --interval-ms 250 --duration-min 30 --db ticks.db
 ```
+
+**1b. Collect at ms resolution (websocket)** — needed to evaluate low-latency:
+
+```bash
+# FIRST confirm the protobuf field numbers against live data:
+python ws_collect.py --symbols BTCUSDT --raw 3
+# then collect for real (adjust --field-* only if --raw showed different numbers):
+python ws_collect.py --symbols BTCUSDT ETHUSDT SOLUSDT --duration-min 30 --db ticks_ws.db
+```
+
+> **Resolution caveat:** MEXC's *public* websocket aggregates updates — the
+> book-ticker stream's floor is **100ms**, the deals stream's is **10ms**. So
+> even by websocket you can resolve lead-lag to ~10–100ms, **not single-digit
+> ms**. Sub-10ms structure is only visible on raw/colocated feeds retail does
+> not receive. Interpret any "breakeven latency" with that floor in mind.
 
 **2. Analyze** a leader → laggard pair:
 
