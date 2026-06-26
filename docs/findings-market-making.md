@@ -72,6 +72,29 @@ none of those. That is the real, final answer to "where is the edge we can
 constantly scalp": the edge is real, it is structural, and it is held by the
 people on the other side of the trade from retail.
 
+## "But what about zero fees / Hyperliquid?"
+
+Two answers. First, nothing is truly zero-fee: Hyperliquid perps are
+**1.5 bps maker / 4.5 bps taker** (≈7× cheaper than Binance spot's 10 bps —
+genuinely better, use it) but the maker *rebate* only starts above $500M of
+14-day volume, a different universe from 100 USDT.
+
+Second, and decisive: we set the model fee to **literally zero** and the retail
+maker still does not win.
+
+| Fee | PRO (fast) | RETAIL (slow) |
+|-----|-----------|----------------|
+| +1 bp | +3.31 bps/fill (76%) | −1.05 bps/fill (49%) |
+| 0 (free) | +4.31 (80%) | **−0.05 (54%)** |
+| −1 bp rebate | +5.31 (83%) | +0.95 (62%) |
+
+At zero fees the adverse-selection breakeven only moves from ~10 bps of pick-off
+to ~13 bps — it buys a little room, it does not change who wins. Fees were never
+the deciding term; **speed (pick-off severity) is.** On a fast on-chain venue
+like Hyperliquid the retail maker faces *more* sophisticated counterparties (pro
+MMs + the HLP vault), so adverse selection gets worse, not better. Lower fees
+help the *provider* strategies (funding carry), not scalping.
+
 ## What this leaves actually open for retail
 
 Not scalping. The only honest "constant small income" left standing is the
