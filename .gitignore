@@ -11,3 +11,7 @@ data/
 .DS_Store
 .idea/
 .vscode/
+
+# leadlag research
+leadlag/ticks.db
+leadlag/*.db
