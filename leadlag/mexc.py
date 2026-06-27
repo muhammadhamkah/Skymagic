@@ -44,7 +44,10 @@ class MexcPublic:
         self.session.headers.update({"User-Agent": "leadlag-research/0.1"})
 
     def ping(self) -> bool:
-        r = self.session.get(f"{self.base}/api/v3/ping", timeout=self.timeout)
+        try:
+            r = self.session.get(f"{self.base}/api/v3/ping", timeout=self.timeout)
+        except requests.RequestException:
+            return False
         return r.status_code == 200
 
     def server_time_ms(self) -> int:
