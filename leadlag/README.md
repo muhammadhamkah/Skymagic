@@ -32,6 +32,7 @@ What still has to be true for a real edge, beyond zero fees:
 | `pbdecode.py` | dependency-free protobuf wire decoder used by `ws_collect.py` |
 | `analyze.py` | cross-correlation lead-lag + conservative cost reality check |
 | `event_study.py` | conditional "trade only when it clears the spread" + breakeven-latency sweep |
+| `latency_probe.py` | measure your REAL latency to MEXC (RTT distribution + feed staleness) |
 
 ## Install
 
