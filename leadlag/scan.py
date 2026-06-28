@@ -41,9 +41,19 @@ def build_universe():
 
 def fetch_book(url, out, key):
     try:
-        out[key] = {d["symbol"]: (float(d["bidPrice"]), float(d["askPrice"])) for d in get(url, 15)}
+        data = get(url, 15)
     except Exception as e:
-        out[key + "_err"] = str(e)
+        out[key + "_err"] = repr(e)
+        return
+    book = {}
+    for d in data:
+        try:
+            b, a = float(d["bidPrice"]), float(d["askPrice"])
+            if b > 0 and a > 0:                       # skip empty/dead symbols
+                book[d["symbol"]] = (b, a)
+        except (KeyError, ValueError, TypeError):
+            continue                                  # one bad entry must not kill the batch
+    out[key] = book
 
 
 def snapshot(universe):
@@ -63,9 +73,12 @@ def snapshot(universe):
 
 def collect(universe):
     print("connectivity check...")
-    _, snap = snapshot(universe)
-    if not snap:
-        print("ERROR: could not read both exchanges. If Binance is blocked, tell me.")
+    probe = {}
+    fetch_book(BINANCE_BOOK, probe, "B")
+    fetch_book(MEXC_BOOK, probe, "M")
+    if "B" not in probe or "M" not in probe:
+        print("ERROR reading exchanges — "
+              f"binance: {probe.get('B_err', 'ok')} | mexc: {probe.get('M_err', 'ok')}")
         sys.exit(1)
     print(f"OK — {len(snap)} pairs live. collecting every {CADENCE_S*1000:.0f}ms "
           f"for {DURATION_MIN}min (Ctrl+C to stop early)...\n")
