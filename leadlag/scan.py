@@ -80,7 +80,8 @@ def collect(universe):
         print("ERROR reading exchanges — "
               f"binance: {probe.get('B_err', 'ok')} | mexc: {probe.get('M_err', 'ok')}")
         sys.exit(1)
-    print(f"OK — {len(snap)} pairs live. collecting every {CADENCE_S*1000:.0f}ms "
+    live = sum(1 for s in universe if s in probe["B"] and s in probe["M"])
+    print(f"OK — {live} pairs live. collecting every {CADENCE_S*1000:.0f}ms "
           f"for {DURATION_MIN}min (Ctrl+C to stop early)...\n")
     out = []
     dead = time.time() + DURATION_MIN * 60
