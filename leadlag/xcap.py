@@ -36,8 +36,8 @@ MEXC_WS = "wss://wbs-api.mexc.com/ws"
 MEXC_CHAN = "spot@public.aggre.bookTicker.v3.api.pb@100ms@BTCUSDT"
 DATA = os.path.expanduser("~/xcap_data.jsonl")
 
-# MEXC protobuf field map (verify with `raw`); defaults per documented schema
-F_SYMBOL, F_BODY, F_BID, F_ASK = 3, 4, 1, 3
+# MEXC protobuf field map (verified live via `raw`): body is field 315
+F_SYMBOL, F_BODY, F_BID, F_ASK = 3, 315, 1, 3
 
 T0 = time.perf_counter_ns()
 events = []          # (t_ms, "B"/"M", mid)
