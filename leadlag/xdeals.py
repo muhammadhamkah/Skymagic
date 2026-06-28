@@ -22,9 +22,9 @@ MEXC_WS = "wss://wbs-api.mexc.com/ws"
 MEXC_CHAN = "spot@public.aggre.deals.v3.api.pb@10ms@BTCUSDT"
 DATA = os.path.expanduser("~/xdeals_data.jsonl")
 
-# deals protobuf field map — VERIFY with `raw`. Body likely a high field number
-# holding a repeated 'deals' message; each deal has a price string somewhere.
-F_BODY = 315          # adjust after `raw`
+# deals protobuf field map (verified live via `raw`): body=314, repeated deals
+# at field 1, each deal's price at field 1 (qty=2, side=3, trade-time=4, id=5).
+F_BODY = 314
 F_DEAL = 1            # repeated deal entries inside body
 F_PRICE = 1          # price field inside a deal
 
