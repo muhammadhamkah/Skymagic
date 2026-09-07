@@ -49,14 +49,26 @@ def test_sample_uses_injected_fetcher():
     assert row["ts"].endswith("+00:00")
 
 
-def test_insert_and_summary_roundtrip():
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(sl.SCHEMA)
+def test_binance_falls_back_to_main_api_when_vision_host_fails():
+    calls = []
+
+    def flaky_get(url: str) -> dict:
+        calls.append(url)
+        if "binance.vision" in url:
+            raise RuntimeError("451")
+        return {"bidPrice": "1", "askPrice": "2"}
+
+    assert sl.fetch_binance("BTCUSDT", flaky_get) == (1.0, 2.0)
+    assert "binance.vision" in calls[0] and "api.binance.com" in calls[1]
+
+
+def _four_rows():
     base = sl.sample(get=fake_get)
     for i, prem in enumerate([0.02, -0.01, 0.005, -0.02]):
-        row = dict(base, ts=f"2026-09-0{i + 1}T00:00:00+00:00", btc_premium=prem, usdt_premium=prem / 2)
-        sl.insert(conn, row)
-    s = sl.summary(conn)
+        yield dict(base, ts=f"2026-09-0{i + 1}T00:00:00+00:00", btc_premium=prem, usdt_premium=prem / 2)
+
+
+def _check_summary(s):
     assert s["n"] == 4
     assert s["btc"]["sign_flips"] == 3
     assert s["btc"]["share_abs_over_1.5pct"] == 0.5
@@ -64,7 +76,26 @@ def test_insert_and_summary_roundtrip():
     assert s["btc"]["min_pct"] == -2.0
 
 
-def test_summary_empty():
+def test_sqlite_insert_and_summary_roundtrip():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(sl.SCHEMA)
+    for row in _four_rows():
+        sl.insert(conn, row)
+    _check_summary(sl.summary(conn))
+
+
+def test_csv_append_and_summary_roundtrip(tmp_path):
+    path = tmp_path / "nested" / "idr_premium.csv"
+    for row in _four_rows():
+        sl.append_csv(str(path), row)
+    lines = path.read_text().splitlines()
+    assert lines[0].split(",") == sl.CSV_COLUMNS  # header written exactly once
+    assert len(lines) == 5
+    _check_summary(sl.summary_from_rows(sl.load_csv_premia(str(path))))
+
+
+def test_summary_empty(tmp_path):
     conn = sqlite3.connect(":memory:")
     conn.executescript(sl.SCHEMA)
     assert sl.summary(conn) == {"n": 0}
+    assert sl.summary_from_rows(sl.load_csv_premia(str(tmp_path / "missing.csv"))) == {"n": 0}

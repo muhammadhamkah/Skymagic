@@ -6,13 +6,22 @@ Two premia are recorded each tick:
   btc_premium  : Indodax BTC/IDR vs Binance BTC/USDT * USD/IDR
   usdt_premium : Indodax USDT/IDR vs USD/IDR (the stablecoin rail itself)
 
-Run it on a machine with internet access, every 5 to 15 minutes, for 30 days:
+Two ways to run it for 30 days:
 
-    python research/spread_logger.py run --interval 600
+  a) GitHub Actions (no machine needed). `.github/workflows/idr_premium.yml` runs
+     one sample every 15 minutes and commits the row to
+     `research/data/idr_premium.csv`. Scheduled workflows only fire on the repo's
+     default branch, so merge the PR first; until then use "Run workflow" in the
+     Actions tab to test it on this branch.
 
-Then:
+  b) Your own machine:
 
-    python research/spread_logger.py summary
+         python research/spread_logger.py run --interval 600
+
+Either way, read the result with:
+
+    python research/spread_logger.py summary --csv research/data/idr_premium.csv
+    python research/spread_logger.py summary            # SQLite variant
 
 Go / no-go after 30 days (all figures net of nothing, so subtract your own costs):
   - mean |premium| under 0.5%              -> no gap, drop it
@@ -28,17 +37,20 @@ Roughly 0.8% to 1.0% all in, so a 1.5% gap is the floor of interest.
 """
 
 import argparse
+import csv
 import json
 import sqlite3
 import sys
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import requests
 
 INDODAX_TICKER = "https://indodax.com/api/ticker/{pair}"
-BINANCE_BOOK = "https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}"
+BINANCE_BOOK = "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={symbol}"
+BINANCE_BOOK_FALLBACK = "https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}"
 FX_RATES = "https://open.er-api.com/v6/latest/USD"
 
 SCHEMA = """
@@ -72,7 +84,10 @@ def fetch_indodax(pair: str, get: Fetcher = _get_json) -> tuple[float, float]:
 
 
 def fetch_binance(symbol: str, get: Fetcher = _get_json) -> tuple[float, float]:
-    data = get(BINANCE_BOOK.format(symbol=symbol))
+    try:
+        data = get(BINANCE_BOOK.format(symbol=symbol))
+    except Exception:  # the .vision host is rarely down; fall back to the main API
+        data = get(BINANCE_BOOK_FALLBACK.format(symbol=symbol))
     return float(data["bidPrice"]), float(data["askPrice"])
 
 
@@ -128,8 +143,33 @@ def insert(conn: sqlite3.Connection, row: dict) -> None:
     conn.commit()
 
 
-def summary(conn: sqlite3.Connection) -> dict:
-    rows = conn.execute("SELECT btc_premium, usdt_premium FROM idr_premium ORDER BY ts").fetchall()
+CSV_COLUMNS = [
+    "ts", "indodax_btc_bid", "indodax_btc_ask", "indodax_usdt_bid", "indodax_usdt_ask",
+    "binance_btc_bid", "binance_btc_ask", "usd_idr", "btc_premium", "usdt_premium",
+]
+
+
+def append_csv(path: str, row: dict) -> None:
+    """Append one sample; write the header if the file is new. Git-friendly storage."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    new = not p.exists() or p.stat().st_size == 0
+    with p.open("a", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+        if new:
+            w.writeheader()
+        w.writerow({k: row[k] for k in CSV_COLUMNS})
+
+
+def load_csv_premia(path: str) -> list[tuple[float, float]]:
+    p = Path(path)
+    if not p.exists():
+        return []
+    with p.open(newline="") as fh:
+        return [(float(r["btc_premium"]), float(r["usdt_premium"])) for r in csv.DictReader(fh)]
+
+
+def summary_from_rows(rows: list[tuple[float, float]]) -> dict:
     if not rows:
         return {"n": 0}
     btc = [r[0] for r in rows]
@@ -153,36 +193,56 @@ def summary(conn: sqlite3.Connection) -> dict:
     return {"n": len(rows), "btc": stats(btc), "usdt": stats(usdt)}
 
 
+def summary(conn: sqlite3.Connection) -> dict:
+    rows = conn.execute("SELECT btc_premium, usdt_premium FROM idr_premium ORDER BY ts").fetchall()
+    return summary_from_rows([(r[0], r[1]) for r in rows])
+
+
 def cmd_run(args) -> None:
-    conn = open_db(args.db)
+    conn = None if args.csv else open_db(args.db)
     while True:
         try:
             row = sample()
-            insert(conn, row)
+            if args.csv:
+                append_csv(args.csv, row)
+            else:
+                insert(conn, row)
             print(
                 f"{row['ts']}  btc {row['btc_premium'] * 100:+.3f}%  "
                 f"usdt {row['usdt_premium'] * 100:+.3f}%  usd/idr {row['usd_idr']:.0f}"
             )
         except Exception as exc:  # keep logging through transient failures
             print(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}  ERROR {exc}", file=sys.stderr)
+            if args.once:
+                sys.exit(1)  # a one-shot (cron) run should show red, not silently skip
         if args.once:
             return
         time.sleep(args.interval)
 
 
 def cmd_summary(args) -> None:
-    print(json.dumps(summary(open_db(args.db)), indent=2))
+    if args.csv:
+        result = summary_from_rows(load_csv_premia(args.csv))
+    else:
+        result = summary(open_db(args.db))
+    print(json.dumps(result, indent=2))
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--db", default="data/idr_premium.db")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    def storage_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--db", default="data/idr_premium.db", help="SQLite path (default storage)")
+        sp.add_argument("--csv", help="Append to / read from this CSV instead of SQLite")
+
     r = sub.add_parser("run", help="Sample forever (or once with --once)")
     r.add_argument("--interval", type=int, default=600, help="Seconds between samples")
     r.add_argument("--once", action="store_true")
+    storage_args(r)
     r.set_defaults(func=cmd_run)
     s = sub.add_parser("summary", help="Print stats over everything logged so far")
+    storage_args(s)
     s.set_defaults(func=cmd_summary)
     args = p.parse_args()
     args.func(args)

@@ -83,8 +83,12 @@ June 17, 2026). Check rupiah withdrawal caps and bank flags on repeated large ID
 movements. The premium can widen against you for a month. Do it in your own account
 only; never touch other people's money for this.
 
-**Measurement.** `research/spread_logger.py` records the premium every N minutes to
-SQLite. Run it for 30 days. Go / no-go thresholds are in the script's docstring.
+**Measurement.** `research/spread_logger.py` records the premium. The GitHub Actions
+workflow `.github/workflows/idr_premium.yml` runs it every 15 minutes and commits each
+row to `research/data/idr_premium.csv`, so the repo is the data store and no machine
+needs to stay on. Scheduled workflows only fire on the default branch, so it starts for
+real once this PR is merged. Let it run 30 days. Go / no-go thresholds are in the
+script's docstring.
 
 ### 2. Stock-perpetual weekend basis. Barrier: needs an equity leg + oracle risk.
 
