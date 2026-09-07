@@ -11,3 +11,7 @@ data/
 .DS_Store
 .idea/
 .vscode/
+
+# Sampled by .github/workflows/idr_premium.yml; the repo is the data store.
+!research/data/
+!research/data/idr_premium.csv

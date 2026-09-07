@@ -1,0 +1,53 @@
+name: IDR premium sampler
+
+# Samples the Indonesia rupiah crypto premium and commits the row to
+# research/data/idr_premium.csv, so the repo itself is the data store.
+#
+# GitHub only fires `schedule` on the repository's default branch. Until this
+# is merged there, trigger it by hand from the Actions tab (workflow_dispatch),
+# which runs on whichever branch you pick.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Never let two samples race on the same branch.
+concurrency:
+  group: idr-premium-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet requests
+
+      - name: Take one sample
+        run: python research/spread_logger.py run --once --csv research/data/idr_premium.csv
+
+      - name: Print running summary
+        run: python research/spread_logger.py summary --csv research/data/idr_premium.csv
+
+      - name: Commit and push the new row
+        run: |
+          git config user.name "idr-premium-sampler"
+          git config user.email "actions@users.noreply.github.com"
+          git add research/data/idr_premium.csv
+          git diff --cached --quiet && { echo "no new row"; exit 0; }
+          git commit -q -m "data: IDR premium sample $(date -u +%Y-%m-%dT%H:%MZ)"
+          # another commit may have landed since checkout; rebase onto it first
+          git pull --rebase -q origin "${{ github.ref_name }}" || { git rebase --abort; exit 1; }
+          git push origin HEAD:"${{ github.ref_name }}"
